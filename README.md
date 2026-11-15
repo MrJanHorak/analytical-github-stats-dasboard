@@ -4,8 +4,8 @@ A self-hosted Next.js dashboard for **views, unique visitors, clones, referrers,
 
 ![Overview](docs/overview.png)
 
-- **Overview** — totals with % change vs the previous period, daily traffic chart, sortable/filterable repo table with sparklines, top referrers, CSV export.
-- **Repo detail** — views & clones (total vs unique), **full star & fork history** (back to repo creation), recent stargazers and forks, referrers, popular content, languages, weekly commits, release downloads.
+- **Overview** — totals with % change vs the previous period, daily traffic chart, sortable/filterable repo table with sparklines, top referrers with trend sparklines, CSV export.
+- **Repo detail** — views & clones (total vs unique), **full star & fork history** (back to repo creation), recent stargazers and forks, referrer trend chart, referrers, popular content, languages and weekly commits (cached), release downloads.
 - Ranges: 7 / 14 / 30 / 90 / 365 days / all time.
 
 ![Repo detail](docs/repo-detail.png)
@@ -41,11 +41,12 @@ Neon URLs use the serverless HTTP driver; any other Postgres URL (Railway, Supab
 
 ```bash
 npm test            # unit tests + sync/query integration test on in-memory Postgres (PGlite)
+npm run lint
 npm run typecheck
 npm run build
 ```
 
-CI runs all three on every push and pull request.
+CI runs lint, typecheck, tests and build on every push and pull request.
 
 ## Deploy (Vercel)
 
@@ -53,7 +54,13 @@ CI runs all three on every push and pull request.
 2. `vercel.json` schedules `/api/cron/sync` daily. Vercel sends `Authorization: Bearer $CRON_SECRET` automatically.
 3. Set `DASHBOARD_PASSWORD` to put the dashboard behind basic auth.
 
-**Many repos?** Hobby functions time out at 60s. Either raise `maxDuration` (Pro) or use the included GitHub Actions workflow (`.github/workflows/sync.yml`) — add `GH_STATS_TOKEN` and `DATABASE_URL` as repository secrets.
+**First sync:** run `npm run sync` locally once — it backfills full star/fork history with no time limit.
+
+**Time limits:** the cron route collects traffic for every repo first (it expires after 14 days), then refreshes star/fork history until its time budget (`SYNC_TIME_BUDGET_MS`, default 45s) runs out; anything left over resumes on the next run. For very many repos you can also raise `maxDuration` (Pro) or use the included GitHub Actions workflow (`.github/workflows/sync.yml`) — add `GH_STATS_TOKEN` and `DATABASE_URL` as repository secrets.
+
+### About "unique" numbers
+
+GitHub reports unique visitors per day and, separately, deduplicated over its 14-day window. The big number on the cards sums daily uniques over the selected range (someone visiting on 3 days counts 3 times); the "distinct · last 14d" line underneath is GitHub's deduplicated figure from the latest sync.
 
 ## Stack
 

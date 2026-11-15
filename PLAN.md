@@ -51,6 +51,7 @@ repos            (id PK = GitHub repo id, owner, name, full_name, description,
                   private, fork, archived, language, html_url, created_at, pushed_at, synced_at)
 repo_snapshots   (repo_id, date) PK — stars, forks, watchers, open_issues, size_kb
 traffic_daily    (repo_id, date) PK — views, view_uniques, clones, clone_uniques
+traffic_windows  (repo_id, date) PK — GitHub's deduplicated 14-day totals as of date
 referrers        (repo_id, date, referrer) PK — count, uniques   [14-day window as of date]
 popular_paths    (repo_id, date, path) PK — title, count, uniques
 release_assets   (repo_id, date, asset_id) PK — release_tag, asset_name, downloads (cumulative)
@@ -89,5 +90,6 @@ All writes are upserts, so re-running the sync is safe and the partial "today" r
 
 - **M1 ✅** schema, sync job, overview + detail pages, cron.
 - **M2 ✅** basic-auth middleware, range picker incl. all-time, sparklines, % vs previous period (only when a full previous window is stored), full star/fork history from GitHub timestamps, recent stargazers/forks, CSV export, demo seed data, any-Postgres support, unit + integration tests, CI.
-- **M3:** referrer trend charts (referrers are stored daily already), week-over-week alerts (traffic spike → email/webhook), per-repo notes/annotations on charts (e.g. "posted on HN"), README badge endpoint.
+- **M2.5 ✅** time-budgeted sync (traffic first, history backfills resume next run), GitHub's deduplicated 14-day uniques, 1h cache for live languages/commit stats, referrer trend chart + sparklines, ESLint in CI.
+- **M3:** week-over-week alerts (traffic spike → email/webhook), per-repo notes/annotations on charts (e.g. "posted on HN"), README badge endpoint.
 - **M4:** multi-user via GitHub OAuth / GitHub App.
