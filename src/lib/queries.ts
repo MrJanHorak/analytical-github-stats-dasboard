@@ -4,6 +4,8 @@ import { bucket, cumulativeByDay, fillDaily, joinSeries, pivotReferrers } from "
 import { daysAgo, isoDay } from "./utils";
 
 const {
+  alerts,
+  annotations,
   repos,
   repoSnapshots,
   trafficDaily,
@@ -162,11 +164,30 @@ export async function getOverview(rangeDays: number) {
     { ...ZERO },
   );
 
+  const [recentAlerts, notes] = await Promise.all([
+    db
+      .select({ alert: alerts, fullName: repos.fullName })
+      .from(alerts)
+      .innerJoin(repos, eq(repos.id, alerts.repoId))
+      .where(gte(alerts.date, since))
+      .orderBy(desc(alerts.date), desc(alerts.id))
+      .limit(8),
+    db
+      .select({ date: annotations.date, label: annotations.label, name: repos.name })
+      .from(annotations)
+      .innerJoin(repos, eq(repos.id, annotations.repoId))
+      .where(gte(annotations.date, since))
+      .orderBy(asc(annotations.date)),
+  ]);
+
   const sum = (k: "views" | "viewUniques" | "clones" | "cloneUniques" | "stars" | "forks" | "starsDelta" | "forksDelta") =>
     rows.reduce((a, r) => a + r[k], 0);
 
   return {
     since,
+    recentAlerts: recentAlerts.map((a) => ({ ...a.alert, fullName: a.fullName })),
+    /** Chart markers across all repos */
+    markers: notes.map((n) => ({ date: n.date, label: `${n.name}: ${n.label}` })),
     repos: rows,
     daily,
     topReferrers: referrerTrends,
@@ -196,7 +217,7 @@ export async function getRepoDetail(owner: string, name: string, rangeDays: numb
   const latestFor = (table: typeof referrers | typeof popularPaths | typeof releaseAssets) =>
     sql`${table.date} = (select max(date) from ${table} where repo_id = ${repo.id})`;
 
-  const [daily, prev, latestSnap, refs, paths, assets, downloadsByDay, stars, forks, windows, refHistory] = await Promise.all([
+  const [daily, prev, latestSnap, refs, paths, assets, downloadsByDay, stars, forks, windows, refHistory, notes, repoAlerts] = await Promise.all([
     db
       .select()
       .from(trafficDaily)
@@ -237,6 +258,8 @@ export async function getRepoDetail(owner: string, name: string, rangeDays: numb
       .select({ date: referrers.date, referrer: referrers.referrer, count: referrers.count })
       .from(referrers)
       .where(and(eq(referrers.repoId, repo.id), gte(referrers.date, since))),
+    db.select().from(annotations).where(eq(annotations.repoId, repo.id)).orderBy(desc(annotations.date), desc(annotations.id)),
+    db.select().from(alerts).where(eq(alerts.repoId, repo.id)).orderBy(desc(alerts.date), desc(alerts.id)).limit(20),
   ]);
 
   // Trend for the referrers that matter most right now (top 5 in the latest window)
@@ -271,6 +294,13 @@ export async function getRepoDetail(owner: string, name: string, rangeDays: numb
     previous: prevSince ? prev[0] ?? ZERO : null,
     window14: windows[0] ?? null,
     referrerTrend,
+    notes,
+    alerts: repoAlerts,
+    /** Notes + alerts inside the current window, for chart reference lines */
+    markers: [
+      ...notes.filter((n) => n.date >= since).map((n) => ({ date: n.date, label: n.label, kind: "note" as const })),
+      ...repoAlerts.filter((a) => a.date >= since).map((a) => ({ date: a.date, label: alertShortLabel(a.kind), kind: "alert" as const })),
+    ],
     current: { stars: latestSnap[0]?.stars ?? stars.length, forks: latestSnap[0]?.forks ?? forks.length },
     starsGained: stars.filter((s) => s.starredAt >= sinceTs).length,
     forksGained: forks.filter((f) => f.createdAt >= sinceTs).length,
@@ -282,6 +312,14 @@ export async function getRepoDetail(owner: string, name: string, rangeDays: numb
     assets,
     downloadsByDay,
   };
+}
+
+export function alertShortLabel(kind: string) {
+  if (kind === "views_spike") return "views spike";
+  if (kind === "clones_spike") return "clones spike";
+  if (kind === "stars_burst") return "star burst";
+  if (kind.startsWith("stars_milestone_")) return `${kind.split("_").at(-1)} ★`;
+  return kind;
 }
 
 /** Rows for CSV export. */

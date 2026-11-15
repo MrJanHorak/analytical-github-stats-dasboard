@@ -7,6 +7,7 @@ import {
   Legend,
   Line,
   LineChart,
+  ReferenceLine,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -14,6 +15,9 @@ import {
 } from "recharts";
 
 type Series = { key: string; label: string; color: string; dashed?: boolean };
+export type Marker = { date: string; label: string; kind?: "note" | "alert" };
+
+const MARKER_COLOR = { note: "#a1a1aa", alert: "#d29922" } as const;
 
 const axis = { stroke: "#52525b", fontSize: 11, tickLine: false, axisLine: false } as const;
 const tooltip = {
@@ -29,25 +33,68 @@ export function TimeSeriesChart({
   area = false,
   height = 260,
   emptyText = "No data yet — run a sync.",
+  markers = [],
 }: {
   data: Record<string, unknown>[];
   series: Series[];
   area?: boolean;
   height?: number;
   emptyText?: string;
+  /** Vertical reference lines (notes, alerts); only drawn for dates present in `data` */
+  markers?: Marker[];
 }) {
   if (!data.length) {
     return <div className="flex h-40 items-center justify-center text-sm text-zinc-500">{emptyText}</div>;
   }
   const Chart = area ? AreaChart : LineChart;
+  // Merge markers on the same day; skip dates the chart doesn't have.
+  const dates = new Set(data.map((d) => String(d.date)));
+  const byDate = new Map<string, Marker[]>();
+  for (const m of markers) if (dates.has(m.date)) byDate.set(m.date, [...(byDate.get(m.date) ?? []), m]);
+  const markerText = (d: string) => (byDate.get(d) ?? []).map((m) => m.label).join(" · ");
+  // Only label lines that have room; close neighbours still show their text in the tooltip.
+  const index = new Map(data.map((d, i) => [String(d.date), i]));
+  const minGap = Math.max(2, Math.round(data.length * 0.15));
+  const labelled = new Set<string>();
+  let lastIdx = -Infinity;
+  for (const date of [...byDate.keys()].sort()) {
+    const i = index.get(date)!;
+    if (i - lastIdx >= minGap) {
+      labelled.add(date);
+      lastIdx = i;
+    }
+  }
   return (
     <ResponsiveContainer width="100%" height={height}>
       <Chart data={data} margin={{ top: 8, right: 8, left: -16, bottom: 0 }}>
         <CartesianGrid stroke="#27272a" vertical={false} />
         <XAxis dataKey="date" tickFormatter={shortDate} {...axis} minTickGap={24} />
         <YAxis {...axis} allowDecimals={false} />
-        <Tooltip {...tooltip} labelFormatter={(l) => shortDate(String(l))} />
+        <Tooltip
+          {...tooltip}
+          labelFormatter={(l) => {
+            const note = markerText(String(l));
+            return note ? `${shortDate(String(l))} — ${note}` : shortDate(String(l));
+          }}
+        />
         <Legend wrapperStyle={{ fontSize: 12 }} />
+        {[...byDate].map(([date, ms]) => {
+          const color = MARKER_COLOR[ms.some((m) => m.kind === "alert") ? "alert" : "note"];
+          const text = markerText(date);
+          return (
+            <ReferenceLine
+              key={date}
+              x={date}
+              stroke={color}
+              strokeDasharray="3 3"
+              label={
+                labelled.has(date)
+                  ? { value: text.length > 22 ? text.slice(0, 21) + "…" : text, position: "insideTopRight", fill: color, fontSize: 10 }
+                  : undefined
+              }
+            />
+          );
+        })}
         {series.map((s) =>
           area ? (
             <Area key={s.key} type="monotone" dataKey={s.key} name={s.label} stroke={s.color} fill={s.color} fillOpacity={0.15} strokeWidth={2} isAnimationActive={false} />

@@ -111,6 +111,29 @@ export function pivotReferrers(rows: { date: string; referrer: string; count: nu
   };
 }
 
+export type SpikeOptions = { factor: number; minValue: number; minBaselineDays: number };
+
+/**
+ * Is the last value in `series` a spike relative to the mean of the values before it?
+ * `series` is a dense daily series (oldest → newest) whose last element is the day being judged.
+ * Requires `minBaselineDays` of history so a brand-new install doesn't flag everything.
+ */
+export function detectSpike(
+  series: number[],
+  { factor, minValue, minBaselineDays }: SpikeOptions,
+): { spike: boolean; value: number; baseline: number } {
+  const value = series.at(-1) ?? 0;
+  const before = series.slice(0, -1);
+  const baseline = before.length ? before.reduce((a, b) => a + b, 0) / before.length : 0;
+  const spike = before.length >= minBaselineDays && value >= minValue && value >= Math.max(baseline, 1) * factor;
+  return { spike, value, baseline };
+}
+
+/** Milestones crossed going from `prev` to `cur` (exclusive of prev, inclusive of cur). */
+export function crossedMilestones(prev: number, cur: number, milestones: readonly number[]): number[] {
+  return milestones.filter((m) => prev < m && cur >= m);
+}
+
 /** Percentage change, or null when there's no baseline. */
 export function pctChange(current: number, previous: number): number | null {
   if (!previous) return null;

@@ -1,4 +1,5 @@
 import { eq, sql } from "drizzle-orm";
+import { evaluateAlerts, notifyAlerts } from "./alerts";
 import { getDb, schema } from "./db";
 import { fetchForks, fetchReleases, fetchStargazers, fetchTraffic, listOwnedRepos } from "./github";
 import { mergeTraffic } from "./transform";
@@ -25,6 +26,8 @@ export type SyncResult = {
   reposSynced: number;
   /** Star/fork history refreshes left for the next run because the time budget ran out */
   historyPending: number;
+  /** New alerts recorded this run (spikes, star bursts, milestones) */
+  alertsCreated: number;
   errors: { repo: string; error: string }[];
 };
 
@@ -99,6 +102,15 @@ export async function runSync(opts: SyncOptions = {}): Promise<SyncResult> {
     errors.push({ repo: "*", error: errMsg(e) });
   }
 
+  // Alerts: judge yesterday against the stored history, then notify (both best-effort)
+  let alertsCreated = 0;
+  try {
+    alertsCreated = (await evaluateAlerts()).length;
+    await notifyAlerts();
+  } catch (e) {
+    errors.push({ repo: "alerts", error: errMsg(e) });
+  }
+
   await db
     .update(syncRuns)
     .set({
@@ -108,7 +120,7 @@ export async function runSync(opts: SyncOptions = {}): Promise<SyncResult> {
     })
     .where(eq(syncRuns.id, run.id));
 
-  return { reposSynced, historyPending, errors };
+  return { reposSynced, historyPending, alertsCreated, errors };
 }
 
 async function countBy(table: typeof starEvents | typeof forkEvents) {

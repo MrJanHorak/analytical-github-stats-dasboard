@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { TimeSeriesChart } from "@/components/charts";
 import { RangePicker } from "@/components/RangePicker";
 import { RepoTable } from "@/components/RepoTable";
@@ -61,6 +62,7 @@ export default async function Overview({ searchParams }: { searchParams: Promise
           <TimeSeriesChart
             data={data.daily}
             area
+            markers={data.markers}
             series={[
               { key: "views", label: "Views", color: "#2f81f7" },
               { key: "viewUniques", label: "Visitors", color: "#a371f7" },
@@ -85,6 +87,22 @@ export default async function Overview({ searchParams }: { searchParams: Promise
           )}
         </section>
       </div>
+
+      {data.recentAlerts.length > 0 && (
+        <section className="rounded-xl border border-amber-900/50 bg-amber-950/10 p-4">
+          <h2 className="mb-2 text-sm font-medium text-amber-300">⚡ Recent alerts</h2>
+          <ul className="space-y-1 text-sm">
+            {data.recentAlerts.map((a) => (
+              <li key={a.id} className="flex gap-2">
+                <span className="w-24 shrink-0 text-xs tabular-nums text-zinc-500">{a.date}</span>
+                <Link href={`/repo/${a.fullName}?range=${rangeParam(range)}`} className="min-w-0 truncate hover:text-accent">
+                  {a.message}
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       <RepoTable repos={data.repos} range={range} />
     </div>

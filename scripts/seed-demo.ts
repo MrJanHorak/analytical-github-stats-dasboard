@@ -6,7 +6,7 @@ import { inArray } from "drizzle-orm";
 import { getDb, schema } from "../src/lib/db";
 import { daysAgo, isoDay } from "../src/lib/utils";
 
-const { repos, repoSnapshots, trafficDaily, trafficWindows, referrers, popularPaths, releaseAssets, starEvents, forkEvents, syncRuns } =
+const { alerts, annotations, repos, repoSnapshots, trafficDaily, trafficWindows, referrers, popularPaths, releaseAssets, starEvents, forkEvents, syncRuns } =
   schema;
 
 // Deterministic PRNG so screenshots are stable
@@ -28,7 +28,7 @@ const DAYS = 120;
 async function main() {
   const db = getDb();
   const ids = DEMO.map((_, i) => 900001 + i);
-  for (const t of [trafficDaily, trafficWindows, repoSnapshots, referrers, popularPaths, releaseAssets, starEvents, forkEvents]) {
+  for (const t of [alerts, annotations, trafficDaily, trafficWindows, repoSnapshots, referrers, popularPaths, releaseAssets, starEvents, forkEvents]) {
     await db.delete(t).where(inArray(t.repoId, ids));
   }
   await db.delete(repos).where(inArray(repos.id, ids));
@@ -152,6 +152,19 @@ async function main() {
       }
     }
   }
+
+  // Notes and alerts so the timeline, chart markers and alerts panel have something to show
+  const top = ids[0];
+  await db.insert(annotations).values([
+    { repoId: top, date: daysAgo(31), label: "Posted on Hacker News" },
+    { repoId: top, date: daysAgo(12), label: "v1.2.0 released" },
+    { repoId: ids[1], date: daysAgo(20), label: "Blog post" },
+  ]);
+  await db.insert(alerts).values([
+    { repoId: top, date: daysAgo(30), kind: "views_spike", value: 512, baseline: 61, message: `demo/${DEMO[0].name}: 512 views on ${daysAgo(30)} (8.4× the usual 61/day)` },
+    { repoId: top, date: daysAgo(29), kind: "stars_burst", value: 23, message: `demo/${DEMO[0].name}: +23 stars on ${daysAgo(29)}` },
+    { repoId: ids[1], date: daysAgo(6), kind: "stars_milestone_200", value: 200, message: `demo/${DEMO[1].name} reached 200 stars ⭐` },
+  ]);
 
   await db.insert(syncRuns).values({ finishedAt: new Date(), reposSynced: DEMO.length });
   console.log(`Seeded ${DEMO.length} demo repos with ${DAYS} days of traffic.`);

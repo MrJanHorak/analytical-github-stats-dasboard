@@ -5,9 +5,10 @@ import { RangePicker } from "@/components/RangePicker";
 import { SetupNotice } from "@/components/SetupNotice";
 import { StatCard } from "@/components/StatCard";
 import { isDbConfigured } from "@/lib/db";
+import { addNote, deleteNote } from "./actions";
 import { getCommitActivity, getLanguages } from "@/lib/github-cached";
 import { getRepoDetail } from "@/lib/queries";
-import { fmt, parseRange, rangeParam, rangeText } from "@/lib/utils";
+import { fmt, isoDay, parseRange, rangeParam, rangeText } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
 
@@ -76,6 +77,7 @@ export default async function RepoPage({ params, searchParams }: Props) {
           <h2 className="mb-3 text-sm font-medium text-zinc-400">Views</h2>
           <TimeSeriesChart
             data={data.daily}
+            markers={data.markers}
             series={[
               { key: "views", label: "Views", color: "#2f81f7" },
               { key: "viewUniques", label: "Unique", color: "#2f81f7", dashed: true },
@@ -86,6 +88,7 @@ export default async function RepoPage({ params, searchParams }: Props) {
           <h2 className="mb-3 text-sm font-medium text-zinc-400">Clones</h2>
           <TimeSeriesChart
             data={data.daily}
+            markers={data.markers}
             series={[
               { key: "clones", label: "Clones", color: "#3fb950" },
               { key: "cloneUniques", label: "Unique", color: "#3fb950", dashed: true },
@@ -111,6 +114,58 @@ export default async function RepoPage({ params, searchParams }: Props) {
             series={[{ key: "commits", label: "Commits", color: "#db61a2" }]} />
         </section>
       </div>
+
+      <section className="min-w-0 rounded-xl border border-zinc-800 p-4">
+        <h2 className="mb-3 text-sm font-medium text-zinc-400">Notes &amp; alerts</h2>
+        <form action={addNote} className="mb-4 flex flex-wrap items-center gap-2">
+          <input type="hidden" name="repo" value={repo.fullName} />
+          <input
+            type="date"
+            name="date"
+            defaultValue={isoDay()}
+            required
+            className="rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-sm [color-scheme:dark]"
+          />
+          <input
+            name="label"
+            required
+            maxLength={120}
+            placeholder='e.g. "Posted on Hacker News"'
+            className="min-w-0 flex-1 rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-sm outline-none focus:border-accent"
+          />
+          <button className="rounded-md bg-zinc-800 px-3 py-1 text-sm hover:bg-zinc-700">Add note</button>
+        </form>
+        {data.notes.length || data.alerts.length ? (
+          <ul className="space-y-1.5 text-sm">
+            {[
+              ...data.notes.map((n) => ({ key: `n${n.id}`, date: n.date, text: n.label, note: n })),
+              ...data.alerts.map((a) => ({ key: `a${a.id}`, date: a.date, text: a.message, note: null })),
+            ]
+              .sort((a, b) => b.date.localeCompare(a.date))
+              .map((item) => (
+                <li key={item.key} className="flex items-center gap-2">
+                  <span className="w-24 shrink-0 text-xs tabular-nums text-zinc-500">{item.date}</span>
+                  <span className={item.note ? "text-zinc-200" : "text-amber-300"}>{item.note ? "📝" : "⚡"}</span>
+                  <span className="min-w-0 flex-1 truncate">{item.text}</span>
+                  {item.note && (
+                    <form action={deleteNote}>
+                      <input type="hidden" name="id" value={item.note.id} />
+                      <input type="hidden" name="repo" value={repo.fullName} />
+                      <button className="text-xs text-zinc-500 hover:text-rose-400" aria-label="Delete note">
+                        ✕
+                      </button>
+                    </form>
+                  )}
+                </li>
+              ))}
+          </ul>
+        ) : (
+          <p className="text-sm text-zinc-500">
+            No notes yet. Add one to mark launches or posts on the charts — traffic spikes and star milestones appear here
+            automatically.
+          </p>
+        )}
+      </section>
 
       {data.referrerTrend.data.length > 1 && (
         <section className="min-w-0 rounded-xl border border-zinc-800 p-4">

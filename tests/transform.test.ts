@@ -1,5 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { bucket, cumulativeByDay, dayRange, fillDaily, joinSeries, mergeTraffic, pctChange, pivotReferrers, toCsv } from "@/lib/transform";
+import { compact, renderBadge } from "@/lib/badge";
+import {
+  bucket,
+  crossedMilestones,
+  cumulativeByDay,
+  dayRange,
+  detectSpike,
+  fillDaily,
+  joinSeries,
+  mergeTraffic,
+  pctChange,
+  pivotReferrers,
+  toCsv,
+} from "@/lib/transform";
 import { parseRange, rangeParam } from "@/lib/utils";
 
 describe("mergeTraffic", () => {
@@ -88,6 +101,47 @@ describe("pivotReferrers", () => {
       { date: "2026-11-01", r0: 3, r1: 0 },
       { date: "2026-11-02", r0: 4, r1: 5 },
     ]);
+  });
+});
+
+describe("detectSpike", () => {
+  const opts = { factor: 3, minValue: 25, minBaselineDays: 7 };
+  const flat = Array(14).fill(10);
+
+  it("flags a day at ≥ factor × the trailing mean", () => {
+    expect(detectSpike([...flat, 30], opts)).toEqual({ spike: true, value: 30, baseline: 10 });
+    expect(detectSpike([...flat, 29], opts).spike).toBe(false);
+  });
+
+  it("needs a minimum absolute value (no alerts for 0 → 3 views)", () => {
+    expect(detectSpike([...Array(14).fill(0), 20], opts).spike).toBe(false);
+    expect(detectSpike([...Array(14).fill(0), 25], opts).spike).toBe(true);
+  });
+
+  it("needs enough baseline history", () => {
+    expect(detectSpike([1, 1, 1, 100], opts).spike).toBe(false);
+  });
+});
+
+describe("crossedMilestones", () => {
+  it("returns every milestone passed", () => {
+    expect(crossedMilestones(9, 10, [10, 25])).toEqual([10]);
+    expect(crossedMilestones(8, 30, [10, 25, 50])).toEqual([10, 25]);
+    expect(crossedMilestones(10, 12, [10, 25])).toEqual([]);
+    expect(crossedMilestones(30, 20, [25])).toEqual([]);
+  });
+});
+
+describe("badge", () => {
+  it("escapes label/message and sizes to content", () => {
+    const svg = renderBadge('<script>"', "1.2k/month");
+    expect(svg).toContain("&lt;script&gt;&quot;");
+    expect(svg).not.toContain("<script>");
+    expect(Number(/width="(\d+)"/.exec(svg)![1])).toBeGreaterThan(60);
+  });
+
+  it("compact", () => {
+    expect([compact(999), compact(1234), compact(10_400), compact(1_250_000)]).toEqual(["999", "1.2k", "10k", "1.3M"]);
   });
 });
 
