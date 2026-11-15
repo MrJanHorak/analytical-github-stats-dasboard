@@ -15,6 +15,13 @@
       "when": 1794710028166,
       "tag": "0001_star_fork_history",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1794711047141,
+      "tag": "0002_traffic_windows",
+      "breakpoints": true
     }
   ]
 }

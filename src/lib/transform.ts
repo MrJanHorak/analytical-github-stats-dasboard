@@ -90,6 +90,27 @@ export function bucket(values: number[], maxPoints: number): number[] {
   return out;
 }
 
+/**
+ * Pivot long referrer rows into chart rows `{date, r0, r1, …}` for the given referrers.
+ * Keys are neutral (r0…) because referrer names contain dots, which Recharts treats as paths.
+ * A referrer absent on a date (fell out of GitHub's top 10) is 0.
+ */
+export function pivotReferrers(rows: { date: string; referrer: string; count: number }[], referrers: string[]) {
+  const keyOf = new Map(referrers.map((r, i) => [r, `r${i}`]));
+  const byDate = new Map<string, Record<string, string | number>>();
+  for (const row of rows) {
+    const key = keyOf.get(row.referrer);
+    if (!key) continue;
+    let d = byDate.get(row.date);
+    if (!d) byDate.set(row.date, (d = { date: row.date, ...Object.fromEntries([...keyOf.values()].map((k) => [k, 0])) }));
+    d[key] = (Number(d[key]) || 0) + row.count;
+  }
+  return {
+    data: [...byDate.values()].sort((a, b) => String(a.date).localeCompare(String(b.date))),
+    series: referrers.map((r, i) => ({ key: `r${i}`, label: r })),
+  };
+}
+
 /** Percentage change, or null when there's no baseline. */
 export function pctChange(current: number, previous: number): number | null {
   if (!previous) return null;

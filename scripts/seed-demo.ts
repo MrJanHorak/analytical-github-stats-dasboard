@@ -6,7 +6,7 @@ import { inArray } from "drizzle-orm";
 import { getDb, schema } from "../src/lib/db";
 import { daysAgo, isoDay } from "../src/lib/utils";
 
-const { repos, repoSnapshots, trafficDaily, referrers, popularPaths, releaseAssets, starEvents, forkEvents, syncRuns } =
+const { repos, repoSnapshots, trafficDaily, trafficWindows, referrers, popularPaths, releaseAssets, starEvents, forkEvents, syncRuns } =
   schema;
 
 // Deterministic PRNG so screenshots are stable
@@ -28,7 +28,7 @@ const DAYS = 120;
 async function main() {
   const db = getDb();
   const ids = DEMO.map((_, i) => 900001 + i);
-  for (const t of [trafficDaily, repoSnapshots, referrers, popularPaths, releaseAssets, starEvents, forkEvents]) {
+  for (const t of [trafficDaily, trafficWindows, repoSnapshots, referrers, popularPaths, releaseAssets, starEvents, forkEvents]) {
     await db.delete(t).where(inArray(t.repoId, ids));
   }
   await db.delete(repos).where(inArray(repos.id, ids));
@@ -89,6 +89,18 @@ async function main() {
     });
     await db.insert(trafficDaily).values(traffic);
 
+    // GitHub's deduplicated 14-day totals: fewer uniques than the sum of daily uniques
+    const last14 = traffic.slice(-14);
+    const tot = (k: "views" | "viewUniques" | "clones" | "cloneUniques") => last14.reduce((a, d) => a + d[k], 0);
+    await db.insert(trafficWindows).values({
+      repoId: id,
+      date: isoDay(),
+      views: tot("views"),
+      viewUniques: Math.round(tot("viewUniques") * 0.55),
+      clones: tot("clones"),
+      cloneUniques: Math.round(tot("cloneUniques") * 0.6),
+    });
+
     for (let back = DAYS - 1; back >= 0; back -= 7) {
       const date = daysAgo(back);
       const cutoff = new Date(date + "T23:59:59Z");
@@ -112,13 +124,18 @@ async function main() {
       sizeKb: int(200, 9000),
     }).onConflictDoNothing();
 
+    // Referrers are a rolling 14-day snapshot stored once per sync — seed 30 days of history
     const refs = REFERRERS.slice(0, int(3, REFERRERS.length));
-    await db.insert(referrers).values(
-      refs.map((r, k) => {
-        const count = Math.round(d.popularity * 14 * (0.5 / (k + 1)) * (0.7 + rand()));
-        return { repoId: id, date: isoDay(), referrer: r, count, uniques: Math.round(count * 0.4) };
-      }),
-    );
+    for (let back = 29; back >= 0; back--) {
+      const hn = i === 0 && back >= 16 && back <= 30 ? 3 : 1; // HN wave fading out of the 14-day window
+      await db.insert(referrers).values(
+        refs.map((r, k) => {
+          const boost = r === "news.ycombinator.com" ? hn : 1;
+          const count = Math.round(d.popularity * 14 * (0.5 / (k + 1)) * boost * (0.85 + rand() * 0.3));
+          return { repoId: id, date: daysAgo(back), referrer: r, count, uniques: Math.round(count * 0.4) };
+        }),
+      );
+    }
     const paths = ["", "/blob/main/README.md", "/issues", "/releases", "/tree/main/src", "/pulls"];
     await db.insert(popularPaths).values(
       paths.map((p, k) => {

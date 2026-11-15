@@ -1,12 +1,13 @@
-import { and, asc, desc, eq, gte, lt, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, lt, sql } from "drizzle-orm";
 import { getDb, schema } from "./db";
-import { bucket, cumulativeByDay, fillDaily, joinSeries } from "./transform";
+import { bucket, cumulativeByDay, fillDaily, joinSeries, pivotReferrers } from "./transform";
 import { daysAgo, isoDay } from "./utils";
 
 const {
   repos,
   repoSnapshots,
   trafficDaily,
+  trafficWindows,
   referrers,
   popularPaths,
   releaseAssets,
@@ -41,6 +42,15 @@ async function windowFor(rangeDays: number, repoId?: number) {
   if (rangeDays === 0) return { since: earliest, until, prevSince: null as string | null };
   const prev = daysAgo(rangeDays * 2 - 1);
   return { since: daysAgo(rangeDays - 1), until, prevSince: earliest <= prev ? prev : null };
+}
+
+/** GitHub's deduplicated 14-day totals from the most recent sync, per repo. */
+async function latestWindows(repoId?: number) {
+  return getDb()
+    .selectDistinctOn([trafficWindows.repoId])
+    .from(trafficWindows)
+    .where(repoId ? eq(trafficWindows.repoId, repoId) : undefined)
+    .orderBy(trafficWindows.repoId, desc(trafficWindows.date));
 }
 
 export type RepoRow = Awaited<ReturnType<typeof getOverview>>["repos"][number];
@@ -123,6 +133,35 @@ export async function getOverview(rangeDays: number) {
     .orderBy(desc(sql`sum(${referrers.count})`))
     .limit(10);
 
+  // Referrer trend: each sync stores GitHub's rolling 14-day referrer counts, one row per day.
+  const trendRows = topReferrers.length
+    ? await db
+        .select({ date: referrers.date, referrer: referrers.referrer, count: sql<number>`sum(${referrers.count})::int` })
+        .from(referrers)
+        .where(and(gte(referrers.date, since), inArray(referrers.referrer, topReferrers.map((r) => r.referrer))))
+        .groupBy(referrers.date, referrers.referrer)
+    : [];
+  const trendBy = new Map<string, { date: string; count: number }[]>();
+  for (const t of trendRows) {
+    if (!trendBy.has(t.referrer)) trendBy.set(t.referrer, []);
+    trendBy.get(t.referrer)!.push(t);
+  }
+  const referrerTrends = topReferrers.map((r) => ({
+    ...r,
+    trend: bucket(fillDaily(trendBy.get(r.referrer) ?? [], "count", since, until), 30),
+  }));
+
+  const windows = await latestWindows();
+  const window14 = windows.reduce(
+    (a, w) => ({
+      views: a.views + w.views,
+      viewUniques: a.viewUniques + w.viewUniques,
+      clones: a.clones + w.clones,
+      cloneUniques: a.cloneUniques + w.cloneUniques,
+    }),
+    { ...ZERO },
+  );
+
   const sum = (k: "views" | "viewUniques" | "clones" | "cloneUniques" | "stars" | "forks" | "starsDelta" | "forksDelta") =>
     rows.reduce((a, r) => a + r[k], 0);
 
@@ -130,7 +169,9 @@ export async function getOverview(rangeDays: number) {
     since,
     repos: rows,
     daily,
-    topReferrers,
+    topReferrers: referrerTrends,
+    /** Sum of each repo's GitHub-deduplicated 14-day totals (null until the first sync stores them) */
+    window14: windows.length ? window14 : null,
     lastRun: lastRun[0] ?? null,
     previous: prevSince ? prev[0] ?? ZERO : null,
     totals: {
@@ -155,7 +196,7 @@ export async function getRepoDetail(owner: string, name: string, rangeDays: numb
   const latestFor = (table: typeof referrers | typeof popularPaths | typeof releaseAssets) =>
     sql`${table.date} = (select max(date) from ${table} where repo_id = ${repo.id})`;
 
-  const [daily, prev, latestSnap, refs, paths, assets, downloadsByDay, stars, forks] = await Promise.all([
+  const [daily, prev, latestSnap, refs, paths, assets, downloadsByDay, stars, forks, windows, refHistory] = await Promise.all([
     db
       .select()
       .from(trafficDaily)
@@ -191,7 +232,18 @@ export async function getRepoDetail(owner: string, name: string, rangeDays: numb
       .orderBy(asc(releaseAssets.date)),
     db.select().from(starEvents).where(eq(starEvents.repoId, repo.id)).orderBy(desc(starEvents.starredAt)),
     db.select().from(forkEvents).where(eq(forkEvents.repoId, repo.id)).orderBy(desc(forkEvents.createdAt)),
+    latestWindows(repo.id),
+    db
+      .select({ date: referrers.date, referrer: referrers.referrer, count: referrers.count })
+      .from(referrers)
+      .where(and(eq(referrers.repoId, repo.id), gte(referrers.date, since))),
   ]);
+
+  // Trend for the referrers that matter most right now (top 5 in the latest window)
+  const referrerTrend = pivotReferrers(
+    refHistory,
+    refs.slice(0, 5).map((r) => r.referrer),
+  );
 
   const totals = daily.reduce(
     (a, d) => ({
@@ -217,6 +269,8 @@ export async function getRepoDetail(owner: string, name: string, rangeDays: numb
     daily,
     totals,
     previous: prevSince ? prev[0] ?? ZERO : null,
+    window14: windows[0] ?? null,
+    referrerTrend,
     current: { stars: latestSnap[0]?.stars ?? stars.length, forks: latestSnap[0]?.forks ?? forks.length },
     starsGained: stars.filter((s) => s.starredAt >= sinceTs).length,
     forksGained: forks.filter((f) => f.createdAt >= sinceTs).length,

@@ -29,6 +29,12 @@ export async function fetchTraffic(owner: string, repo: string) {
     octokit.rest.repos.getTopPaths({ owner, repo }),
   ]);
   return {
+    window: {
+      views: views.data.count,
+      viewUniques: views.data.uniques,
+      clones: clones.data.count,
+      cloneUniques: clones.data.uniques,
+    },
     views: views.data.views,
     clones: clones.data.clones,
     referrers: refs.data,

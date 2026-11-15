@@ -2,6 +2,7 @@ import { TimeSeriesChart } from "@/components/charts";
 import { RangePicker } from "@/components/RangePicker";
 import { RepoTable } from "@/components/RepoTable";
 import { SetupNotice } from "@/components/SetupNotice";
+import { Sparkline } from "@/components/Sparkline";
 import { StatCard } from "@/components/StatCard";
 import { isDbConfigured } from "@/lib/db";
 import { getOverview } from "@/lib/queries";
@@ -35,9 +36,21 @@ export default async function Overview({ searchParams }: { searchParams: Promise
 
       <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-6">
         <StatCard label="Views" value={totals.views} previous={previous?.views} sub={rt} />
-        <StatCard label="Unique visitors" value={totals.viewUniques} previous={previous?.viewUniques} sub="Σ daily uniques" />
+        <StatCard
+          label="Unique visitors"
+          value={totals.viewUniques}
+          previous={previous?.viewUniques}
+          sub="Σ daily uniques"
+          note={data.window14 ? `${fmt(data.window14.viewUniques)} distinct · last 14d` : undefined}
+        />
         <StatCard label="Clones" value={totals.clones} previous={previous?.clones} sub={rt} />
-        <StatCard label="Unique cloners" value={totals.cloneUniques} previous={previous?.cloneUniques} sub="Σ daily uniques" />
+        <StatCard
+          label="Unique cloners"
+          value={totals.cloneUniques}
+          previous={previous?.cloneUniques}
+          sub="Σ daily uniques"
+          note={data.window14 ? `${fmt(data.window14.cloneUniques)} distinct · last 14d` : undefined}
+        />
         <StatCard label="Stars" value={totals.stars} delta={totals.starsDelta} sub={rt} />
         <StatCard label="Forks" value={totals.forks} delta={totals.forksDelta} sub={rt} />
       </div>
@@ -60,9 +73,10 @@ export default async function Overview({ searchParams }: { searchParams: Promise
           {data.topReferrers.length ? (
             <ul className="space-y-2 text-sm">
               {data.topReferrers.map((r) => (
-                <li key={r.referrer} className="flex justify-between gap-2">
-                  <span className="truncate">{r.referrer}</span>
-                  <span className="tabular-nums text-zinc-400">{fmt(r.count)}</span>
+                <li key={r.referrer} className="flex items-center gap-2">
+                  <span className="min-w-0 flex-1 truncate">{r.referrer}</span>
+                  <Sparkline values={r.trend} width={56} height={16} color="#a371f7" />
+                  <span className="w-12 text-right tabular-nums text-zinc-400">{fmt(r.count)}</span>
                 </li>
               ))}
             </ul>

@@ -8,6 +8,7 @@ const {
   repos,
   repoSnapshots,
   trafficDaily,
+  trafficWindows,
   referrers,
   popularPaths,
   releaseAssets,
@@ -19,17 +20,36 @@ const {
 const excluded = (col: string) => sql.raw(`excluded.${col}`);
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-export type SyncResult = { reposSynced: number; errors: { repo: string; error: string }[] };
+export type SyncResult = {
+  /** Repos whose traffic/releases were collected this run */
+  reposSynced: number;
+  /** Star/fork history refreshes left for the next run because the time budget ran out */
+  historyPending: number;
+  errors: { repo: string; error: string }[];
+};
+
+export type SyncOptions = {
+  /**
+   * Stop starting new star/fork history refreshes after this many ms.
+   * Traffic (which expires after 14 days) is always collected first and in full.
+   * Leftover history work is picked up automatically on the next run.
+   */
+  timeBudgetMs?: number;
+};
 
 type OwnedRepo = Awaited<ReturnType<typeof listOwnedRepos>>[number];
+type HistoryJob = { repo: OwnedRepo; kind: "stars" | "forks"; size: number };
 
-export async function runSync(): Promise<SyncResult> {
+export async function runSync(opts: SyncOptions = {}): Promise<SyncResult> {
   const db = getDb();
+  const started = Date.now();
+  const outOfTime = () => opts.timeBudgetMs !== undefined && Date.now() - started > opts.timeBudgetMs;
   const today = isoDay();
   const [run] = await db.insert(syncRuns).values({}).returning({ id: syncRuns.id });
 
   const errors: SyncResult["errors"] = [];
   let reposSynced = 0;
+  let historyPending = 0;
 
   try {
     const owned = await listOwnedRepos();
@@ -37,17 +57,42 @@ export async function runSync(): Promise<SyncResult> {
 
     for (const r of owned) await upsertRepoAndSnapshot(r, today);
 
-    await mapLimit(owned, 4, async (r) => {
-      const owner = r.owner.login;
+    // Phase 1 — traffic: time-critical, GitHub discards it after 14 days.
+    // Archived repos are read-only: GitHub returns 403 for their traffic endpoints.
+    await mapLimit(
+      owned.filter((r) => !r.archived),
+      4,
+      async (r) => {
+        try {
+          await syncRepoTraffic(r.id, r.owner.login, r.name, today);
+          reposSynced++;
+        } catch (e) {
+          errors.push({ repo: r.full_name, error: errMsg(e) });
+        }
+      },
+    );
+
+    // Phase 2 — star/fork history: only for repos whose count moved (keeps API usage low).
+    // Smallest first, so a big first-time backfill can't starve everything else.
+    const jobs: HistoryJob[] = [];
+    for (const r of owned) {
+      if ((starCounts.get(r.id) ?? 0) !== (r.stargazers_count ?? 0))
+        jobs.push({ repo: r, kind: "stars", size: r.stargazers_count ?? 0 });
+      if ((forkCounts.get(r.id) ?? 0) !== (r.forks_count ?? 0))
+        jobs.push({ repo: r, kind: "forks", size: r.forks_count ?? 0 });
+    }
+    jobs.sort((a, b) => a.size - b.size);
+
+    await mapLimit(jobs, 4, async ({ repo: r, kind }) => {
+      if (outOfTime()) {
+        historyPending++;
+        return;
+      }
       try {
-        // Archived repos are read-only: GitHub returns 403 for their traffic endpoints.
-        if (!r.archived) await syncRepoTraffic(r.id, owner, r.name, today);
-        // Only refetch stargazers/forks when the count moved — keeps API usage low.
-        if ((starCounts.get(r.id) ?? 0) !== (r.stargazers_count ?? 0)) await syncStars(r.id, owner, r.name);
-        if ((forkCounts.get(r.id) ?? 0) !== (r.forks_count ?? 0)) await syncForks(r.id, owner, r.name);
-        reposSynced++;
+        if (kind === "stars") await syncStars(r.id, r.owner.login, r.name);
+        else await syncForks(r.id, r.owner.login, r.name);
       } catch (e) {
-        errors.push({ repo: r.full_name, error: errMsg(e) });
+        errors.push({ repo: `${r.full_name} (${kind})`, error: errMsg(e) });
       }
     });
   } catch (e) {
@@ -63,7 +108,7 @@ export async function runSync(): Promise<SyncResult> {
     })
     .where(eq(syncRuns.id, run.id));
 
-  return { reposSynced, errors };
+  return { reposSynced, historyPending, errors };
 }
 
 async function countBy(table: typeof starEvents | typeof forkEvents) {
@@ -136,6 +181,19 @@ async function upsertRepoAndSnapshot(r: OwnedRepo, today: string) {
 async function syncRepoTraffic(repoId: number, owner: string, name: string, today: string) {
   const db = getDb();
   const t = await fetchTraffic(owner, name);
+
+  await db
+    .insert(trafficWindows)
+    .values({ repoId, date: today, ...t.window })
+    .onConflictDoUpdate({
+      target: [trafficWindows.repoId, trafficWindows.date],
+      set: {
+        views: excluded("views"),
+        viewUniques: excluded("view_uniques"),
+        clones: excluded("clones"),
+        cloneUniques: excluded("clone_uniques"),
+      },
+    });
 
   const days = mergeTraffic(t.views, t.clones);
   if (days.length) {

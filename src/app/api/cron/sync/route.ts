@@ -9,6 +9,8 @@ export async function GET(req: Request) {
   if (!secret || req.headers.get("authorization") !== `Bearer ${secret}`) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
-  const result = await runSync();
+  // Leave headroom under maxDuration; unfinished star/fork backfills resume next run.
+  const timeBudgetMs = Number(process.env.SYNC_TIME_BUDGET_MS ?? (maxDuration - 15) * 1000);
+  const result = await runSync({ timeBudgetMs });
   return NextResponse.json(result, { status: result.errors.length ? 207 : 200 });
 }

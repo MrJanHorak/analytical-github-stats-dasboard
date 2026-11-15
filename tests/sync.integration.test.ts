@@ -70,6 +70,7 @@ beforeEach(() => {
     repo(2, "archived-one", { archived: true, stargazers_count: 0, forks_count: 0 }),
   ] as never);
   m.fetchTraffic.mockResolvedValue({
+    window: { views: 30, viewUniques: 7, clones: 3, cloneUniques: 2 },
     views: [
       { timestamp: ts(2), count: 10, uniques: 4 },
       { timestamp: ts(1), count: 20, uniques: 6 },
@@ -97,7 +98,8 @@ describe("runSync", () => {
   it("collects traffic, snapshots, releases, stars and forks", async () => {
     const result = await runSync();
     expect(result.errors).toEqual([]);
-    expect(result.reposSynced).toBe(2);
+    expect(result.reposSynced).toBe(1); // archived repo has no traffic API
+    expect(result.historyPending).toBe(0);
 
     // Archived repos skip the traffic endpoints
     expect(m.fetchTraffic).toHaveBeenCalledTimes(1);
@@ -114,6 +116,7 @@ describe("runSync", () => {
 
   it("is idempotent and corrects partial days on re-run", async () => {
     m.fetchTraffic.mockResolvedValue({
+      window: { views: 35, viewUniques: 8, clones: 0, cloneUniques: 0 },
       views: [{ timestamp: ts(1), count: 25, uniques: 7 }],
       clones: [],
       referrers: [],
@@ -147,7 +150,29 @@ describe("runSync", () => {
     m.fetchTraffic.mockRejectedValueOnce(new Error("Resource not accessible"));
     const result = await runSync();
     expect(result.errors).toEqual([{ repo: "jan/alpha", error: "Resource not accessible" }]);
-    expect(result.reposSynced).toBe(1);
+    expect(result.reposSynced).toBe(0);
+  });
+
+  it("defers star/fork backfills past the time budget and resumes next run", async () => {
+    m.listOwnedRepos.mockResolvedValue([repo(1, "alpha"), repo(3, "big", { stargazers_count: 2, forks_count: 0 })] as never);
+    m.fetchStargazers.mockResolvedValue([
+      { login: "a", starredAt: ts(10) },
+      { login: "b", starredAt: ts(9) },
+    ]);
+    const first = await runSync({ timeBudgetMs: -1 }); // already out of time
+    expect(first.reposSynced).toBe(2); // traffic always collected
+    expect(first.historyPending).toBe(1);
+    expect(m.fetchStargazers).not.toHaveBeenCalled();
+
+    const second = await runSync({ timeBudgetMs: 60_000 });
+    expect(second.historyPending).toBe(0);
+    expect(m.fetchStargazers).toHaveBeenCalledWith("jan", "big");
+    const rows = await pg.query<{ n: number }>("select count(*)::int as n from star_events where repo_id = 3");
+    expect(rows.rows[0].n).toBe(2);
+
+    m.listOwnedRepos.mockResolvedValue([repo(1, "alpha"), repo(2, "archived-one", { archived: true, stargazers_count: 0, forks_count: 0 })] as never);
+    await pg.exec("delete from repos where id = 3; delete from star_events where repo_id = 3; delete from traffic_daily where repo_id = 3; delete from traffic_windows where repo_id = 3; delete from referrers where repo_id = 3; delete from popular_paths where repo_id = 3; delete from release_assets where repo_id = 3; delete from repo_snapshots where repo_id = 3");
+    await runSync();
   });
 });
 
@@ -166,6 +191,10 @@ describe("dashboard queries", () => {
     expect(o.previous).toBeNull();
     expect(o.topReferrers.length).toBeGreaterThanOrEqual(0);
     expect(o.lastRun?.finishedAt).toBeTruthy();
+    // GitHub's deduplicated 14-day totals from the latest sync
+    expect(o.window14).toEqual({ views: 30, viewUniques: 7, clones: 3, cloneUniques: 2 });
+    expect(o.topReferrers[0]).toMatchObject({ referrer: "github.com", count: 12 });
+    expect(o.topReferrers[0].trend.at(-1)).toBe(12);
   });
 
   it("getOverview supports all-time range", async () => {
@@ -182,6 +211,9 @@ describe("dashboard queries", () => {
     expect(d.recentForks[0].fullName).toBe("someone/alpha");
     expect(d.assets[0]).toMatchObject({ assetName: "alpha.zip", downloads: 42 });
     expect(d.paths[0].path).toBe("/jan/alpha");
+    expect(d.window14).toMatchObject({ viewUniques: 7 });
+    expect(d.referrerTrend.series.map((s) => s.label)).toEqual(["github.com", "google.com"]);
+    expect(d.referrerTrend.data.at(-1)).toMatchObject({ r0: 12, r1: 8 });
   });
 
   it("getRepoDetail returns null for unknown repos", async () => {

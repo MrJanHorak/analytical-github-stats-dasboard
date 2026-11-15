@@ -5,11 +5,13 @@ import { RangePicker } from "@/components/RangePicker";
 import { SetupNotice } from "@/components/SetupNotice";
 import { StatCard } from "@/components/StatCard";
 import { isDbConfigured } from "@/lib/db";
-import { fetchCommitActivity, fetchLanguages } from "@/lib/github";
+import { getCommitActivity, getLanguages } from "@/lib/github-cached";
 import { getRepoDetail } from "@/lib/queries";
 import { fmt, parseRange, rangeParam, rangeText } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
+
+const REFERRER_COLORS = ["#2f81f7", "#a371f7", "#3fb950", "#d29922", "#db61a2"];
 
 type Props = {
   params: Promise<{ owner: string; name: string }>;
@@ -23,11 +25,8 @@ export default async function RepoPage({ params, searchParams }: Props) {
   const data = await getRepoDetail(owner, name, range);
   if (!data) notFound();
 
-  // Live (not stored) extras; failures shouldn't break the page.
-  const [languages, commits] = await Promise.all([
-    fetchLanguages(owner, name).catch(() => ({}) as Record<string, number>),
-    fetchCommitActivity(owner, name).catch(() => []),
-  ]);
+  // Live (not stored) extras, cached; failures shouldn't break the page.
+  const [languages, commits] = await Promise.all([getLanguages(owner, name), getCommitActivity(owner, name)]);
   const langTotal = Object.values(languages).reduce((a, b) => a + b, 0);
   const commitWeeks = commits.map((w) => ({ date: new Date(w.week * 1000).toISOString().slice(0, 10), commits: w.total }));
 
@@ -53,9 +52,21 @@ export default async function RepoPage({ params, searchParams }: Props) {
 
       <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-6">
         <StatCard label="Views" value={totals.views} previous={previous?.views} sub={rt} />
-        <StatCard label="Unique visitors" value={totals.viewUniques} previous={previous?.viewUniques} sub="Σ daily uniques" />
+        <StatCard
+          label="Unique visitors"
+          value={totals.viewUniques}
+          previous={previous?.viewUniques}
+          sub="Σ daily uniques"
+          note={data.window14 ? `${fmt(data.window14.viewUniques)} distinct · last 14d` : undefined}
+        />
         <StatCard label="Clones" value={totals.clones} previous={previous?.clones} sub={rt} />
-        <StatCard label="Unique cloners" value={totals.cloneUniques} previous={previous?.cloneUniques} sub="Σ daily uniques" />
+        <StatCard
+          label="Unique cloners"
+          value={totals.cloneUniques}
+          previous={previous?.cloneUniques}
+          sub="Σ daily uniques"
+          note={data.window14 ? `${fmt(data.window14.cloneUniques)} distinct · last 14d` : undefined}
+        />
         <StatCard label="Stars" value={data.current.stars} delta={data.starsGained} sub={rt} />
         <StatCard label="Forks" value={data.current.forks} delta={data.forksGained} sub={rt} />
       </div>
@@ -100,6 +111,17 @@ export default async function RepoPage({ params, searchParams }: Props) {
             series={[{ key: "commits", label: "Commits", color: "#db61a2" }]} />
         </section>
       </div>
+
+      {data.referrerTrend.data.length > 1 && (
+        <section className="min-w-0 rounded-xl border border-zinc-800 p-4">
+          <h2 className="mb-1 text-sm font-medium text-zinc-400">Referrer trend</h2>
+          <p className="mb-3 text-xs text-zinc-500">Each point is GitHub&apos;s rolling 14-day view count for that source, as of that day.</p>
+          <TimeSeriesChart
+            data={data.referrerTrend.data}
+            series={data.referrerTrend.series.map((s, i) => ({ ...s, color: REFERRER_COLORS[i % REFERRER_COLORS.length] }))}
+          />
+        </section>
+      )}
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <Table

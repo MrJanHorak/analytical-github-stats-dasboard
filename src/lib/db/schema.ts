@@ -56,6 +56,23 @@ export const trafficDaily = pgTable(
   (t) => [primaryKey({ columns: [t.repoId, t.date] })],
 );
 
+/**
+ * GitHub's own 14-day totals as reported on `date`. Unlike summing daily uniques,
+ * these uniques are deduplicated across the whole 14-day window.
+ */
+export const trafficWindows = pgTable(
+  "traffic_windows",
+  {
+    repoId: repoId(),
+    date: date("date").notNull(),
+    views: integer("views").notNull(),
+    viewUniques: integer("view_uniques").notNull(),
+    clones: integer("clones").notNull(),
+    cloneUniques: integer("clone_uniques").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.repoId, t.date] })],
+);
+
 /** Rolling 14-day top-10 referrers, as reported on `date`. */
 export const referrers = pgTable(
   "referrers",

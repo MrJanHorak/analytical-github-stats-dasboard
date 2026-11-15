@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bucket, cumulativeByDay, dayRange, fillDaily, joinSeries, mergeTraffic, pctChange, toCsv } from "@/lib/transform";
+import { bucket, cumulativeByDay, dayRange, fillDaily, joinSeries, mergeTraffic, pctChange, pivotReferrers, toCsv } from "@/lib/transform";
 import { parseRange, rangeParam } from "@/lib/utils";
 
 describe("mergeTraffic", () => {
@@ -65,6 +65,28 @@ describe("joinSeries", () => {
       { date: "2026-11-01", stars: 1, forks: 0 },
       { date: "2026-11-02", stars: 1, forks: 5 },
       { date: "2026-11-03", stars: 2, forks: 5 },
+    ]);
+  });
+});
+
+describe("pivotReferrers", () => {
+  it("pivots to neutral keys, zero-fills and ignores other referrers", () => {
+    const out = pivotReferrers(
+      [
+        { date: "2026-11-02", referrer: "news.ycombinator.com", count: 5 },
+        { date: "2026-11-01", referrer: "github.com", count: 3 },
+        { date: "2026-11-02", referrer: "github.com", count: 4 },
+        { date: "2026-11-02", referrer: "ignored.com", count: 99 },
+      ],
+      ["github.com", "news.ycombinator.com"],
+    );
+    expect(out.series).toEqual([
+      { key: "r0", label: "github.com" },
+      { key: "r1", label: "news.ycombinator.com" },
+    ]);
+    expect(out.data).toEqual([
+      { date: "2026-11-01", r0: 3, r1: 0 },
+      { date: "2026-11-02", r0: 4, r1: 5 },
     ]);
   });
 });

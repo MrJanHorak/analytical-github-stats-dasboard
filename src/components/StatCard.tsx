@@ -9,9 +9,11 @@ type Props = {
   delta?: number;
   /** Value for the previous equal-length period → shows "% vs prev" */
   previous?: number | null;
+  /** Extra line under the card, e.g. GitHub's deduplicated 14-day uniques */
+  note?: string;
 };
 
-export function StatCard({ label, value, sub, delta, previous }: Props) {
+export function StatCard({ label, value, sub, delta, previous, note }: Props) {
   const pct = previous === undefined || previous === null ? null : pctChange(value, previous);
   return (
     <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-4">
@@ -31,6 +33,7 @@ export function StatCard({ label, value, sub, delta, previous }: Props) {
         )}
         {sub}
       </div>
+      {note && <div className="mt-1 truncate text-xs text-zinc-400" title={note}>{note}</div>}
     </div>
   );
 }
