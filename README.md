@@ -2,8 +2,15 @@
 
 A self-hosted Next.js dashboard for **views, unique visitors, clones, referrers, popular pages, stars, forks and release downloads** across all of your GitHub repositories — with history that goes back further than GitHub's 14-day traffic window.
 
-- **Overview** — totals, daily traffic chart across all repos, sortable/filterable repo table, top referrers.
-- **Repo detail** — views & clones (total vs unique), stars & forks over time, referrers, popular content, languages, weekly commits, release downloads.
+![Overview](docs/overview.png)
+
+- **Overview** — totals with % change vs the previous period, daily traffic chart, sortable/filterable repo table with sparklines, top referrers, CSV export.
+- **Repo detail** — views & clones (total vs unique), **full star & fork history** (back to repo creation), recent stargazers and forks, referrers, popular content, languages, weekly commits, release downloads.
+- Ranges: 7 / 14 / 30 / 90 / 365 days / all time.
+
+![Repo detail](docs/repo-detail.png)
+
+_Screenshots use the built-in demo data (`npm run seed:demo`)._
 
 See [PLAN.md](./PLAN.md) for the architecture and roadmap.
 
@@ -19,10 +26,26 @@ GitHub's Traffic API only returns the last 14 days. A daily sync job (`/api/cron
    ```bash
    cp .env.example .env    # fill in GITHUB_TOKEN, DATABASE_URL, CRON_SECRET
    npm install
-   npm run db:push         # create tables
-   npm run sync            # first data pull
+   npm run db:migrate      # create tables
+   npm run sync            # first data pull (also backfills star/fork history)
    npm run dev
    ```
+
+   Want to look around before connecting GitHub? `npm run seed:demo` fills the database with fake repos.
+
+### Postgres options
+
+Neon URLs use the serverless HTTP driver; any other Postgres URL (Railway, Supabase, Docker) uses a regular TCP pool. Override with `DB_DRIVER=neon|pg`.
+
+## Development
+
+```bash
+npm test            # unit tests + sync/query integration test on in-memory Postgres (PGlite)
+npm run typecheck
+npm run build
+```
+
+CI runs all three on every push and pull request.
 
 ## Deploy (Vercel)
 
@@ -34,4 +57,4 @@ GitHub's Traffic API only returns the last 14 days. A daily sync job (`/api/cron
 
 ## Stack
 
-Next.js 15 · TypeScript · Tailwind CSS v4 · Recharts · Drizzle ORM · Postgres (Neon) · Octokit
+Next.js 15 · TypeScript · Tailwind CSS v4 · Recharts · Drizzle ORM · Postgres (Neon or any) · Octokit · Vitest + PGlite

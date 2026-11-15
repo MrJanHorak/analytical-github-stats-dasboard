@@ -54,6 +54,8 @@ traffic_daily    (repo_id, date) PK — views, view_uniques, clones, clone_uniqu
 referrers        (repo_id, date, referrer) PK — count, uniques   [14-day window as of date]
 popular_paths    (repo_id, date, path) PK — title, count, uniques
 release_assets   (repo_id, date, asset_id) PK — release_tag, asset_name, downloads (cumulative)
+star_events      (repo_id, login) PK — starred_at        [full star history, refetched only when count changes]
+fork_events      (repo_id, fork_id) PK — full_name, owner, stars, created_at
 sync_runs        (id, started_at, finished_at, repos_synced, error)
 ```
 
@@ -85,7 +87,7 @@ All writes are upserts, so re-running the sync is safe and the partial "today" r
 
 ## 8. Roadmap
 
-- **M1 (this scaffold):** schema, sync job, overview + detail pages, cron.
-- **M2:** password middleware, range picker, sparklines, star-history backfill script, CSV export.
-- **M3:** referrer trend charts, week-over-week alerts (e.g. traffic spike email/webhook), README badges.
+- **M1 ✅** schema, sync job, overview + detail pages, cron.
+- **M2 ✅** basic-auth middleware, range picker incl. all-time, sparklines, % vs previous period (only when a full previous window is stored), full star/fork history from GitHub timestamps, recent stargazers/forks, CSV export, demo seed data, any-Postgres support, unit + integration tests, CI.
+- **M3:** referrer trend charts (referrers are stored daily already), week-over-week alerts (traffic spike → email/webhook), per-repo notes/annotations on charts (e.g. "posted on HN"), README badge endpoint.
 - **M4:** multi-user via GitHub OAuth / GitHub App.
