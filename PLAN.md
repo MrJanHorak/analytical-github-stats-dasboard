@@ -34,14 +34,15 @@ Not available from GitHub: visitor geography, devices, time-of-day, individual i
 
 - **Next.js 15 (App Router) + TypeScript** — server components query the DB directly.
 - **Tailwind CSS v4** for styling, **Recharts** for charts.
-- **Postgres** (Neon free tier works well with Vercel) via **Drizzle ORM**.
+- **Postgres** via **Drizzle ORM**: Neon's serverless HTTP driver for `*.neon.tech`, postgres.js (TCP) for anything else.
 - **Octokit** for the GitHub REST API.
 - **Vercel Cron** hitting `/api/cron/sync` daily (a GitHub Actions schedule is an equally good alternative).
+- **Vitest + PGlite** (in-memory Postgres with the real migrations) for tests; **Playwright** for README screenshots; ESLint; GitHub Actions CI.
 
 ## 4. Auth (v1: single user)
 
 - A **fine-grained personal access token** in `GITHUB_TOKEN`, scoped to *All repositories* with **Administration: Read-only** (required for traffic) and **Metadata: Read-only**. A classic token with `repo` scope also works.
-- Dashboard itself is protected by a simple `DASHBOARD_PASSWORD` (middleware) — or deploy privately.
+- Dashboard, CSV export and note-editing server actions are protected by `DASHBOARD_PASSWORD` (HTTP basic auth middleware). Exceptions: `/api/cron/*` (own bearer secret) and `/api/badge/*` (public by design, public repos only).
 - **v2:** Auth.js GitHub OAuth / a GitHub App so multiple users can sign in and track their own repos (tables already carry `owner`).
 
 ## 5. Data model
@@ -57,39 +58,34 @@ popular_paths    (repo_id, date, path) PK — title, count, uniques
 release_assets   (repo_id, date, asset_id) PK — release_tag, asset_name, downloads (cumulative)
 star_events      (repo_id, login) PK — starred_at        [full star history, refetched only when count changes]
 fork_events      (repo_id, fork_id) PK — full_name, owner, stars, created_at
+alerts           (id, repo_id, date, kind) — message, value, baseline, notified_at   [unique (repo_id, date, kind)]
+annotations      (id, repo_id, date, label) — user notes shown as chart markers
 sync_runs        (id, started_at, finished_at, repos_synced, error)
 ```
 
 All writes are upserts, so re-running the sync is safe and the partial "today" row simply gets corrected next run.
 
-## 6. Sync job (`/api/cron/sync`)
+## 6. Sync job (`/api/cron/sync` daily, or `npm run sync`)
 
-1. Authenticated by `Authorization: Bearer $CRON_SECRET` (Vercel sends this automatically).
+1. Cron route is authenticated by `Authorization: Bearer $CRON_SECRET` (Vercel sends this automatically).
 2. List all owned repos (paginated) → upsert `repos` + today's `repo_snapshots`.
-3. For each repo (concurrency 4): views, clones, referrers, paths, releases → upsert.
-4. Record a `sync_runs` row. ~5 requests per repo, so 100 repos ≈ 500 requests — far under the 5,000/hour limit.
-5. Vercel Hobby functions time out at 60s; for many repos, set `maxDuration` higher (Pro) or move the sync to a GitHub Actions workflow that runs `npm run sync`.
+3. **Traffic first** (concurrency 4, skipping archived repos): views, clones, 14-day totals, referrers, paths, releases → upsert. This always runs in full because GitHub deletes it after 14 days.
+4. **History second**: refetch stargazers/forks only for repos whose count changed, smallest first, until `SYNC_TIME_BUDGET_MS` (cron default 45s; CLI unlimited). Leftovers resume next run.
+5. **Alerts**: judge yesterday against stored history → insert into `alerts` (idempotent) → post unnotified ones to `ALERT_WEBHOOK_URL`.
+6. Record a `sync_runs` row. About 5 requests per repo plus history refreshes, so 100 repos ≈ 500 requests, well under the 5,000/hour limit.
 
 ## 7. UI
 
-**Overview `/`**
-- Range picker: 7 / 14 / 30 / 90 / 365 days / all.
-- KPI cards: total views, unique visitors, clones, unique cloners, total stars, total forks (with change over range).
-- Stacked area chart: daily views across all repos.
-- Sortable table: repo, views, uniques, clones, stars (+Δ), forks (+Δ), sparkline, last push.
-- Top referrers across all repos.
+**Overview `/`**: range picker (7/14/30/90/365/all), KPI cards with % vs previous period and GitHub's deduplicated 14-day uniques, daily traffic chart with note markers, top referrers with sparklines, recent alerts, sortable/filterable repo table with sparklines, CSV export.
 
-**Repo detail `/repo/[owner]/[name]`**
-- KPIs for that repo, views/clones line chart (total vs unique).
-- Stars & forks over time (from snapshots).
-- Referrers and popular paths tables (latest window) + referrer trend.
-- Release downloads per asset.
-- Languages breakdown, commit activity (fetched live, cached).
+**Repo detail `/repo/[owner]/[name]`**: KPIs; views/clones charts with note and alert markers; stars & forks history from event timestamps; weekly commits and languages (fetched live, cached); notes & alerts (add/delete notes); referrer trend; referrers and popular content; recent stargazers and forks; release downloads.
+
+**Badges `/api/badge/[owner]/[name]`**: public SVG for public repos only.
 
 ## 8. Roadmap
 
 - **M1 ✅** schema, sync job, overview + detail pages, cron.
 - **M2 ✅** basic-auth middleware, range picker incl. all-time, sparklines, % vs previous period (only when a full previous window is stored), full star/fork history from GitHub timestamps, recent stargazers/forks, CSV export, demo seed data, any-Postgres support, unit + integration tests, CI.
 - **M2.5 ✅** time-budgeted sync (traffic first, history backfills resume next run), GitHub's deduplicated 14-day uniques, 1h cache for live languages/commit stats, referrer trend chart + sparklines, ESLint in CI.
-- **M3:** week-over-week alerts (traffic spike → email/webhook), per-repo notes/annotations on charts (e.g. "posted on HN"), README badge endpoint.
-- **M4:** multi-user via GitHub OAuth / GitHub App.
+- **M3 ✅** alerts (views/clones spikes, star bursts, star milestones) stored per day, shown in the UI and posted to a Slack/Discord webhook; notes pinned to dates as chart markers; public SVG badges; screenshot script and a docs-drift test in CI.
+- **M4:** multi-user via GitHub OAuth / a GitHub App (tables already carry `owner`); email alerts; release-date markers from GitHub releases; per-repo alert thresholds.
