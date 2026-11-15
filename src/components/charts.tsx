@@ -28,14 +28,16 @@ export function TimeSeriesChart({
   series,
   area = false,
   height = 260,
+  emptyText = "No data yet — run a sync.",
 }: {
   data: Record<string, unknown>[];
   series: Series[];
   area?: boolean;
   height?: number;
+  emptyText?: string;
 }) {
   if (!data.length) {
-    return <div className="flex h-40 items-center justify-center text-sm text-zinc-500">No data yet — run a sync.</div>;
+    return <div className="flex h-40 items-center justify-center text-sm text-zinc-500">{emptyText}</div>;
   }
   const Chart = area ? AreaChart : LineChart;
   return (
@@ -48,9 +50,9 @@ export function TimeSeriesChart({
         <Legend wrapperStyle={{ fontSize: 12 }} />
         {series.map((s) =>
           area ? (
-            <Area key={s.key} type="monotone" dataKey={s.key} name={s.label} stroke={s.color} fill={s.color} fillOpacity={0.15} strokeWidth={2} />
+            <Area key={s.key} type="monotone" dataKey={s.key} name={s.label} stroke={s.color} fill={s.color} fillOpacity={0.15} strokeWidth={2} isAnimationActive={false} />
           ) : (
-            <Line key={s.key} type="monotone" dataKey={s.key} name={s.label} stroke={s.color} strokeWidth={2} dot={false} strokeDasharray={s.dashed ? "4 3" : undefined} />
+            <Line key={s.key} type="monotone" dataKey={s.key} name={s.label} stroke={s.color} strokeWidth={2} dot={false} strokeDasharray={s.dashed ? "4 3" : undefined} isAnimationActive={false} />
           ),
         )}
       </Chart>

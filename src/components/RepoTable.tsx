@@ -3,12 +3,14 @@
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import type { RepoRow } from "@/lib/queries";
-import { fmt } from "@/lib/utils";
+import { fmt, rangeParam } from "@/lib/utils";
+import { Sparkline } from "./Sparkline";
 
 type Key = "fullName" | "views" | "viewUniques" | "clones" | "cloneUniques" | "stars" | "forks" | "pushedAt";
 
 const cols: { key: Key; label: string; numeric?: boolean }[] = [
   { key: "fullName", label: "Repository" },
+  { key: "views", label: "Trend", numeric: true },
   { key: "views", label: "Views", numeric: true },
   { key: "viewUniques", label: "Visitors", numeric: true },
   { key: "clones", label: "Clones", numeric: true },
@@ -55,12 +57,12 @@ export function RepoTable({ repos, range }: { repos: RepoRow[]; range: number })
             <tr>
               {cols.map((c) => (
                 <th
-                  key={c.key}
+                  key={c.label}
                   onClick={() => setSort((s) => ({ key: c.key, dir: s.key === c.key ? (s.dir === 1 ? -1 : 1) : -1 }))}
                   className={`cursor-pointer select-none px-3 py-2 hover:text-zinc-300 ${c.numeric ? "text-right" : ""}`}
                 >
                   {c.label}
-                  {sort.key === c.key ? (sort.dir === -1 ? " ↓" : " ↑") : ""}
+                  {sort.key === c.key && c.label !== "Trend" ? (sort.dir === -1 ? " ↓" : " ↑") : ""}
                 </th>
               ))}
             </tr>
@@ -69,11 +71,14 @@ export function RepoTable({ repos, range }: { repos: RepoRow[]; range: number })
             {rows.map((r) => (
               <tr key={r.id} className="border-t border-zinc-800/70 hover:bg-zinc-900/60">
                 <td className="px-3 py-2">
-                  <Link href={`/repo/${r.fullName}?range=${range}`} className="font-medium hover:text-accent">
+                  <Link href={`/repo/${r.fullName}?range=${rangeParam(range)}`} className="font-medium hover:text-accent">
                     {r.name}
                   </Link>
                   {r.isPrivate && <span className="ml-2 rounded border border-zinc-700 px-1 text-[10px] text-zinc-400">private</span>}
                   {r.description && <div className="max-w-md truncate text-xs text-zinc-500">{r.description}</div>}
+                </td>
+                <td className="px-3 py-2 text-right">
+                  <Sparkline values={r.spark} />
                 </td>
                 <td className="px-3 py-2 text-right tabular-nums">{fmt(r.views)}</td>
                 <td className="px-3 py-2 text-right tabular-nums text-zinc-400">{fmt(r.viewUniques)}</td>

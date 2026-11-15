@@ -41,6 +41,32 @@ export async function fetchReleases(owner: string, repo: string) {
   return octokit.paginate(octokit.rest.repos.listReleases, { owner, repo, per_page: 100 });
 }
 
+/** All stargazers with the time they starred (needs the star+json media type). */
+export async function fetchStargazers(owner: string, repo: string) {
+  const octokit = getOctokit();
+  const rows = await octokit.paginate(octokit.rest.activity.listStargazersForRepo, {
+    owner,
+    repo,
+    per_page: 100,
+    headers: { accept: "application/vnd.github.star+json" },
+  });
+  return (rows as unknown as { starred_at?: string; user?: { login: string } | null }[])
+    .filter((s) => s.starred_at && s.user?.login)
+    .map((s) => ({ login: s.user!.login, starredAt: s.starred_at! }));
+}
+
+export async function fetchForks(owner: string, repo: string) {
+  const octokit = getOctokit();
+  const forks = await octokit.paginate(octokit.rest.repos.listForks, { owner, repo, per_page: 100, sort: "oldest" });
+  return forks.map((f) => ({
+    forkId: f.id,
+    fullName: f.full_name,
+    owner: f.owner.login,
+    stars: f.stargazers_count ?? 0,
+    createdAt: f.created_at ?? new Date().toISOString(),
+  }));
+}
+
 export async function fetchLanguages(owner: string, repo: string) {
   const { data } = await getOctokit().rest.repos.listLanguages({ owner, repo });
   return data;

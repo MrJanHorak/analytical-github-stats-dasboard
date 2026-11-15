@@ -1,54 +1,97 @@
-import { and, asc, desc, eq, gte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, lt, sql } from "drizzle-orm";
 import { getDb, schema } from "./db";
-import { daysAgo } from "./utils";
+import { bucket, cumulativeByDay, fillDaily, joinSeries } from "./transform";
+import { daysAgo, isoDay } from "./utils";
 
-const { repos, repoSnapshots, trafficDaily, referrers, popularPaths, releaseAssets, syncRuns } = schema;
+const {
+  repos,
+  repoSnapshots,
+  trafficDaily,
+  referrers,
+  popularPaths,
+  releaseAssets,
+  starEvents,
+  forkEvents,
+  syncRuns,
+} = schema;
+
+type Totals = { views: number; viewUniques: number; clones: number; cloneUniques: number };
+const ZERO: Totals = { views: 0, viewUniques: 0, clones: 0, cloneUniques: 0 };
+
+const trafficSums = {
+  views: sql<number>`coalesce(sum(${trafficDaily.views}),0)::int`,
+  viewUniques: sql<number>`coalesce(sum(${trafficDaily.viewUniques}),0)::int`,
+  clones: sql<number>`coalesce(sum(${trafficDaily.clones}),0)::int`,
+  cloneUniques: sql<number>`coalesce(sum(${trafficDaily.cloneUniques}),0)::int`,
+};
+
+/**
+ * Resolve the [since, until] window; range 0 = all time (from the earliest stored traffic day).
+ * `prevSince` is only set when stored history fully covers the previous equal-length period,
+ * so "% vs previous" never compares against a half-empty window.
+ */
+async function windowFor(rangeDays: number, repoId?: number) {
+  const until = isoDay();
+  const db = getDb();
+  const [row] = await db
+    .select({ min: sql<string | null>`min(${trafficDaily.date})::text` })
+    .from(trafficDaily)
+    .where(repoId ? eq(trafficDaily.repoId, repoId) : undefined);
+  const earliest = row?.min ?? until;
+  if (rangeDays === 0) return { since: earliest, until, prevSince: null as string | null };
+  const prev = daysAgo(rangeDays * 2 - 1);
+  return { since: daysAgo(rangeDays - 1), until, prevSince: earliest <= prev ? prev : null };
+}
 
 export type RepoRow = Awaited<ReturnType<typeof getOverview>>["repos"][number];
 
 export async function getOverview(rangeDays: number) {
   const db = getDb();
-  const since = daysAgo(rangeDays);
+  const { since, until, prevSince } = await windowFor(rangeDays);
 
-  const [allRepos, traffic, snapshots, daily, lastRun] = await Promise.all([
-    db.select().from(repos),
-    db
-      .select({
-        repoId: trafficDaily.repoId,
-        views: sql<number>`coalesce(sum(${trafficDaily.views}),0)::int`,
-        viewUniques: sql<number>`coalesce(sum(${trafficDaily.viewUniques}),0)::int`,
-        clones: sql<number>`coalesce(sum(${trafficDaily.clones}),0)::int`,
-        cloneUniques: sql<number>`coalesce(sum(${trafficDaily.cloneUniques}),0)::int`,
-      })
-      .from(trafficDaily)
-      .where(gte(trafficDaily.date, since))
-      .groupBy(trafficDaily.repoId),
-    db
-      .select()
-      .from(repoSnapshots)
-      .where(gte(repoSnapshots.date, since))
-      .orderBy(asc(repoSnapshots.date)),
-    db
-      .select({
-        date: trafficDaily.date,
-        views: sql<number>`sum(${trafficDaily.views})::int`,
-        viewUniques: sql<number>`sum(${trafficDaily.viewUniques})::int`,
-        clones: sql<number>`sum(${trafficDaily.clones})::int`,
-        cloneUniques: sql<number>`sum(${trafficDaily.cloneUniques})::int`,
-      })
-      .from(trafficDaily)
-      .where(gte(trafficDaily.date, since))
-      .groupBy(trafficDaily.date)
-      .orderBy(asc(trafficDaily.date)),
-    db.select().from(syncRuns).orderBy(desc(syncRuns.startedAt)).limit(1),
-  ]);
+  const [allRepos, traffic, perRepoDaily, daily, prev, latestSnaps, starsGained, forksGained, lastRun] =
+    await Promise.all([
+      db.select().from(repos),
+      db.select({ repoId: trafficDaily.repoId, ...trafficSums }).from(trafficDaily).where(gte(trafficDaily.date, since)).groupBy(trafficDaily.repoId),
+      db
+        .select({ repoId: trafficDaily.repoId, date: trafficDaily.date, views: trafficDaily.views })
+        .from(trafficDaily)
+        .where(gte(trafficDaily.date, since)),
+      db
+        .select({ date: trafficDaily.date, ...trafficSums })
+        .from(trafficDaily)
+        .where(gte(trafficDaily.date, since))
+        .groupBy(trafficDaily.date)
+        .orderBy(asc(trafficDaily.date)),
+      prevSince
+        ? db.select(trafficSums).from(trafficDaily).where(and(gte(trafficDaily.date, prevSince), lt(trafficDaily.date, since)))
+        : Promise.resolve([ZERO]),
+      // Latest snapshot per repo = current star/fork counts
+      db
+        .selectDistinctOn([repoSnapshots.repoId])
+        .from(repoSnapshots)
+        .orderBy(repoSnapshots.repoId, desc(repoSnapshots.date)),
+      db
+        .select({ repoId: starEvents.repoId, n: sql<number>`count(*)::int` })
+        .from(starEvents)
+        .where(gte(starEvents.starredAt, new Date(since + "T00:00:00Z")))
+        .groupBy(starEvents.repoId),
+      db
+        .select({ repoId: forkEvents.repoId, n: sql<number>`count(*)::int` })
+        .from(forkEvents)
+        .where(gte(forkEvents.createdAt, new Date(since + "T00:00:00Z")))
+        .groupBy(forkEvents.repoId),
+      db.select().from(syncRuns).orderBy(desc(syncRuns.startedAt)).limit(1),
+    ]);
 
   const trafficBy = new Map(traffic.map((t) => [t.repoId, t]));
-  const snapBy = new Map<number, { first: (typeof snapshots)[number]; last: (typeof snapshots)[number] }>();
-  for (const s of snapshots) {
-    const cur = snapBy.get(s.repoId);
-    if (!cur) snapBy.set(s.repoId, { first: s, last: s });
-    else cur.last = s;
+  const snapBy = new Map(latestSnaps.map((s) => [s.repoId, s]));
+  const starsBy = new Map(starsGained.map((s) => [s.repoId, s.n]));
+  const forksBy = new Map(forksGained.map((s) => [s.repoId, s.n]));
+  const dailyBy = new Map<number, { date: string; views: number }[]>();
+  for (const d of perRepoDaily) {
+    if (!dailyBy.has(d.repoId)) dailyBy.set(d.repoId, []);
+    dailyBy.get(d.repoId)!.push(d);
   }
 
   const rows = allRepos.map((r) => {
@@ -60,10 +103,11 @@ export async function getOverview(rangeDays: number) {
       viewUniques: t?.viewUniques ?? 0,
       clones: t?.clones ?? 0,
       cloneUniques: t?.cloneUniques ?? 0,
-      stars: s?.last.stars ?? 0,
-      starsDelta: s ? s.last.stars - s.first.stars : 0,
-      forks: s?.last.forks ?? 0,
-      forksDelta: s ? s.last.forks - s.first.forks : 0,
+      stars: s?.stars ?? 0,
+      starsDelta: starsBy.get(r.id) ?? 0,
+      forks: s?.forks ?? 0,
+      forksDelta: forksBy.get(r.id) ?? 0,
+      spark: bucket(fillDaily(dailyBy.get(r.id) ?? [], "views", since, until), 60),
     };
   });
 
@@ -83,10 +127,12 @@ export async function getOverview(rangeDays: number) {
     rows.reduce((a, r) => a + r[k], 0);
 
   return {
+    since,
     repos: rows,
     daily,
     topReferrers,
     lastRun: lastRun[0] ?? null,
+    previous: prevSince ? prev[0] ?? ZERO : null,
     totals: {
       views: sum("views"),
       viewUniques: sum("viewUniques"),
@@ -102,24 +148,26 @@ export async function getOverview(rangeDays: number) {
 
 export async function getRepoDetail(owner: string, name: string, rangeDays: number) {
   const db = getDb();
-  const since = daysAgo(rangeDays);
   const [repo] = await db.select().from(repos).where(eq(repos.fullName, `${owner}/${name}`)).limit(1);
   if (!repo) return null;
+  const { since, until, prevSince } = await windowFor(rangeDays, repo.id);
 
   const latestFor = (table: typeof referrers | typeof popularPaths | typeof releaseAssets) =>
     sql`${table.date} = (select max(date) from ${table} where repo_id = ${repo.id})`;
 
-  const [daily, snapshots, refs, paths, assets, downloadsByDay] = await Promise.all([
+  const [daily, prev, latestSnap, refs, paths, assets, downloadsByDay, stars, forks] = await Promise.all([
     db
       .select()
       .from(trafficDaily)
       .where(and(eq(trafficDaily.repoId, repo.id), gte(trafficDaily.date, since)))
       .orderBy(asc(trafficDaily.date)),
-    db
-      .select()
-      .from(repoSnapshots)
-      .where(and(eq(repoSnapshots.repoId, repo.id), gte(repoSnapshots.date, since)))
-      .orderBy(asc(repoSnapshots.date)),
+    prevSince
+      ? db
+          .select(trafficSums)
+          .from(trafficDaily)
+          .where(and(eq(trafficDaily.repoId, repo.id), gte(trafficDaily.date, prevSince), lt(trafficDaily.date, since)))
+      : Promise.resolve([ZERO]),
+    db.select().from(repoSnapshots).where(eq(repoSnapshots.repoId, repo.id)).orderBy(desc(repoSnapshots.date)).limit(1),
     db
       .select()
       .from(referrers)
@@ -141,6 +189,8 @@ export async function getRepoDetail(owner: string, name: string, rangeDays: numb
       .where(and(eq(releaseAssets.repoId, repo.id), gte(releaseAssets.date, since)))
       .groupBy(releaseAssets.date)
       .orderBy(asc(releaseAssets.date)),
+    db.select().from(starEvents).where(eq(starEvents.repoId, repo.id)).orderBy(desc(starEvents.starredAt)),
+    db.select().from(forkEvents).where(eq(forkEvents.repoId, repo.id)).orderBy(desc(forkEvents.createdAt)),
   ]);
 
   const totals = daily.reduce(
@@ -150,8 +200,70 @@ export async function getRepoDetail(owner: string, name: string, rangeDays: numb
       clones: a.clones + d.clones,
       cloneUniques: a.cloneUniques + d.cloneUniques,
     }),
-    { views: 0, viewUniques: 0, clones: 0, cloneUniques: 0 },
+    { ...ZERO },
   );
 
-  return { repo, daily, snapshots, referrers: refs, paths, assets, downloadsByDay, totals };
+  // Star/fork growth comes from event timestamps, so it reaches back before the app existed.
+  // "All time" starts at repo creation rather than first traffic day.
+  const historySince = rangeDays === 0 && repo.createdAt ? isoDay(repo.createdAt) : since;
+  const sinceTs = new Date(since + "T00:00:00Z");
+  const growth = joinSeries({
+    stars: cumulativeByDay(stars.map((s) => s.starredAt), historySince, until),
+    forks: cumulativeByDay(forks.map((f) => f.createdAt), historySince, until),
+  });
+
+  return {
+    repo,
+    daily,
+    totals,
+    previous: prevSince ? prev[0] ?? ZERO : null,
+    current: { stars: latestSnap[0]?.stars ?? stars.length, forks: latestSnap[0]?.forks ?? forks.length },
+    starsGained: stars.filter((s) => s.starredAt >= sinceTs).length,
+    forksGained: forks.filter((f) => f.createdAt >= sinceTs).length,
+    growth,
+    recentStargazers: stars.slice(0, 12),
+    recentForks: forks.slice(0, 12),
+    referrers: refs,
+    paths,
+    assets,
+    downloadsByDay,
+  };
+}
+
+/** Rows for CSV export. */
+export async function getExportData(kind: "repos" | "daily", rangeDays: number) {
+  const db = getDb();
+  if (kind === "repos") {
+    const o = await getOverview(rangeDays);
+    return o.repos.map(({ spark: _spark, ...r }) => ({
+      repo: r.fullName,
+      views: r.views,
+      unique_visitors: r.viewUniques,
+      clones: r.clones,
+      unique_cloners: r.cloneUniques,
+      stars: r.stars,
+      stars_gained: r.starsDelta,
+      forks: r.forks,
+      forks_gained: r.forksDelta,
+      private: r.isPrivate,
+      fork: r.isFork,
+      language: r.language,
+      pushed_at: r.pushedAt,
+      since: o.since,
+    }));
+  }
+  const { since } = await windowFor(rangeDays);
+  return db
+    .select({
+      date: trafficDaily.date,
+      repo: repos.fullName,
+      views: trafficDaily.views,
+      unique_visitors: trafficDaily.viewUniques,
+      clones: trafficDaily.clones,
+      unique_cloners: trafficDaily.cloneUniques,
+    })
+    .from(trafficDaily)
+    .innerJoin(repos, eq(repos.id, trafficDaily.repoId))
+    .where(gte(trafficDaily.date, since))
+    .orderBy(asc(trafficDaily.date), asc(repos.fullName));
 }

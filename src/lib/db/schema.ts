@@ -2,6 +2,7 @@ import {
   bigint,
   boolean,
   date,
+  index,
   integer,
   pgTable,
   primaryKey,
@@ -94,6 +95,31 @@ export const releaseAssets = pgTable(
     downloads: integer("downloads").notNull(),
   },
   (t) => [primaryKey({ columns: [t.repoId, t.date, t.assetId] })],
+);
+
+/** One row per current stargazer, with GitHub's starred_at — gives full star history. */
+export const starEvents = pgTable(
+  "star_events",
+  {
+    repoId: repoId(),
+    login: text("login").notNull(),
+    starredAt: timestamp("starred_at", { withTimezone: true }).notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.repoId, t.login] }), index("star_events_repo_time").on(t.repoId, t.starredAt)],
+);
+
+/** One row per current fork, with its creation time — gives full fork history. */
+export const forkEvents = pgTable(
+  "fork_events",
+  {
+    repoId: repoId(),
+    forkId: bigint("fork_id", { mode: "number" }).notNull(),
+    fullName: text("full_name").notNull(),
+    owner: text("owner").notNull(),
+    stars: integer("stars").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.repoId, t.forkId] }), index("fork_events_repo_time").on(t.repoId, t.createdAt)],
 );
 
 export const syncRuns = pgTable("sync_runs", {

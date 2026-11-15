@@ -25,9 +25,16 @@ export async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) =>
   return results;
 }
 
-export const RANGES = [7, 14, 30, 90, 365] as const;
+/** Range in days; 0 means "all time". */
+export const RANGES = [7, 14, 30, 90, 365, 0] as const;
 
 export function parseRange(v: string | string[] | undefined) {
-  const n = Number(Array.isArray(v) ? v[0] : v);
-  return (RANGES as readonly number[]).includes(n) ? n : 30;
+  const raw = Array.isArray(v) ? v[0] : v;
+  if (raw === "all") return 0;
+  const n = Number(raw);
+  return raw !== undefined && (RANGES as readonly number[]).includes(n) ? n : 30;
 }
+
+export const rangeParam = (r: number) => (r === 0 ? "all" : String(r));
+export const rangeLabel = (r: number) => (r === 0 ? "All" : `${r}d`);
+export const rangeText = (r: number) => (r === 0 ? "all time" : `last ${r}d`);

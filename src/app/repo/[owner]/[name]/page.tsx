@@ -7,7 +7,7 @@ import { StatCard } from "@/components/StatCard";
 import { isDbConfigured } from "@/lib/db";
 import { fetchCommitActivity, fetchLanguages } from "@/lib/github";
 import { getRepoDetail } from "@/lib/queries";
-import { fmt, parseRange } from "@/lib/utils";
+import { fmt, parseRange, rangeParam, rangeText } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
 
@@ -31,15 +31,14 @@ export default async function RepoPage({ params, searchParams }: Props) {
   const langTotal = Object.values(languages).reduce((a, b) => a + b, 0);
   const commitWeeks = commits.map((w) => ({ date: new Date(w.week * 1000).toISOString().slice(0, 10), commits: w.total }));
 
-  const first = data.snapshots[0];
-  const last = data.snapshots.at(-1);
-  const { repo, totals } = data;
+  const { repo, totals, previous } = data;
+  const rt = rangeText(range);
 
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <Link href={`/?range=${range}`} className="text-sm text-zinc-500 hover:text-zinc-300">
+          <Link href={`/?range=${rangeParam(range)}`} className="text-sm text-zinc-500 hover:text-zinc-300">
             ← All repositories
           </Link>
           <h1 className="text-2xl font-semibold">
@@ -53,16 +52,16 @@ export default async function RepoPage({ params, searchParams }: Props) {
       </div>
 
       <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-6">
-        <StatCard label="Views" value={totals.views} sub={`last ${range}d`} />
-        <StatCard label="Unique visitors" value={totals.viewUniques} sub="sum of daily uniques" />
-        <StatCard label="Clones" value={totals.clones} sub={`last ${range}d`} />
-        <StatCard label="Unique cloners" value={totals.cloneUniques} sub="sum of daily uniques" />
-        <StatCard label="Stars" value={last?.stars ?? 0} delta={first && last ? last.stars - first.stars : 0} sub={`in ${range}d`} />
-        <StatCard label="Forks" value={last?.forks ?? 0} delta={first && last ? last.forks - first.forks : 0} sub={`in ${range}d`} />
+        <StatCard label="Views" value={totals.views} previous={previous?.views} sub={rt} />
+        <StatCard label="Unique visitors" value={totals.viewUniques} previous={previous?.viewUniques} sub="Σ daily uniques" />
+        <StatCard label="Clones" value={totals.clones} previous={previous?.clones} sub={rt} />
+        <StatCard label="Unique cloners" value={totals.cloneUniques} previous={previous?.cloneUniques} sub="Σ daily uniques" />
+        <StatCard label="Stars" value={data.current.stars} delta={data.starsGained} sub={rt} />
+        <StatCard label="Forks" value={data.current.forks} delta={data.forksGained} sub={rt} />
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-2">
-        <section className="rounded-xl border border-zinc-800 p-4">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <section className="min-w-0 rounded-xl border border-zinc-800 p-4">
           <h2 className="mb-3 text-sm font-medium text-zinc-400">Views</h2>
           <TimeSeriesChart
             data={data.daily}
@@ -72,7 +71,7 @@ export default async function RepoPage({ params, searchParams }: Props) {
             ]}
           />
         </section>
-        <section className="rounded-xl border border-zinc-800 p-4">
+        <section className="min-w-0 rounded-xl border border-zinc-800 p-4">
           <h2 className="mb-3 text-sm font-medium text-zinc-400">Clones</h2>
           <TimeSeriesChart
             data={data.daily}
@@ -82,23 +81,27 @@ export default async function RepoPage({ params, searchParams }: Props) {
             ]}
           />
         </section>
-        <section className="rounded-xl border border-zinc-800 p-4">
-          <h2 className="mb-3 text-sm font-medium text-zinc-400">Stars & forks</h2>
+        <section className="min-w-0 rounded-xl border border-zinc-800 p-4">
+          <h2 className="mb-3 text-sm font-medium text-zinc-400">Stars & forks over time</h2>
           <TimeSeriesChart
-            data={data.snapshots}
+            data={data.growth}
             series={[
               { key: "stars", label: "Stars", color: "#d29922" },
               { key: "forks", label: "Forks", color: "#a371f7" },
             ]}
           />
         </section>
-        <section className="rounded-xl border border-zinc-800 p-4">
+        <section className="min-w-0 rounded-xl border border-zinc-800 p-4">
           <h2 className="mb-3 text-sm font-medium text-zinc-400">Commits per week (last year)</h2>
-          <TimeSeriesChart data={commitWeeks} area series={[{ key: "commits", label: "Commits", color: "#db61a2" }]} />
+          <TimeSeriesChart
+            data={commitWeeks}
+            area
+            emptyText="GitHub is still computing commit stats (or GITHUB_TOKEN is missing) — try again shortly."
+            series={[{ key: "commits", label: "Commits", color: "#db61a2" }]} />
         </section>
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-3">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <Table
           title="Referrers (last 14d)"
           rows={data.referrers.map((r) => [r.referrer, r.count, r.uniques])}
@@ -109,7 +112,7 @@ export default async function RepoPage({ params, searchParams }: Props) {
           rows={data.paths.map((p) => [p.path.replace(`/${repo.fullName}`, "") || "/", p.count, p.uniques])}
           headers={["Path", "Views", "Unique"]}
         />
-        <section className="rounded-xl border border-zinc-800 p-4">
+        <section className="min-w-0 rounded-xl border border-zinc-800 p-4">
           <h2 className="mb-3 text-sm font-medium text-zinc-400">Languages</h2>
           {langTotal ? (
             <ul className="space-y-2 text-sm">
@@ -126,19 +129,39 @@ export default async function RepoPage({ params, searchParams }: Props) {
               ))}
             </ul>
           ) : (
-            <p className="text-sm text-zinc-500">No language data.</p>
+            <p className="text-sm text-zinc-500">No language data (fetched live — needs GITHUB_TOKEN).</p>
           )}
         </section>
       </div>
 
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <PeopleList
+          title="Recent stargazers"
+          empty="No stargazers yet."
+          items={data.recentStargazers.map((s) => ({ key: s.login, login: s.login, href: `https://github.com/${s.login}`, at: s.starredAt }))}
+        />
+        <PeopleList
+          title="Recent forks"
+          empty="No forks yet."
+          items={data.recentForks.map((f) => ({
+            key: String(f.forkId),
+            login: f.owner,
+            label: f.fullName,
+            href: `https://github.com/${f.fullName}`,
+            at: f.createdAt,
+            extra: f.stars ? `★ ${fmt(f.stars)}` : undefined,
+          }))}
+        />
+      </div>
+
       {data.assets.length > 0 && (
-        <div className="grid gap-6 lg:grid-cols-2">
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
           <Table
             title="Release downloads (cumulative)"
             rows={data.assets.map((a) => [`${a.releaseTag} · ${a.assetName}`, a.downloads])}
             headers={["Asset", "Downloads"]}
           />
-          <section className="rounded-xl border border-zinc-800 p-4">
+          <section className="min-w-0 rounded-xl border border-zinc-800 p-4">
             <h2 className="mb-3 text-sm font-medium text-zinc-400">Total downloads over time</h2>
             <TimeSeriesChart data={data.downloadsByDay} series={[{ key: "downloads", label: "Downloads", color: "#3fb950" }]} />
           </section>
@@ -148,9 +171,42 @@ export default async function RepoPage({ params, searchParams }: Props) {
   );
 }
 
+function PeopleList({
+  title,
+  empty,
+  items,
+}: {
+  title: string;
+  empty: string;
+  items: { key: string; login: string; label?: string; href: string; at: Date; extra?: string }[];
+}) {
+  return (
+    <section className="min-w-0 rounded-xl border border-zinc-800 p-4">
+      <h2 className="mb-3 text-sm font-medium text-zinc-400">{title}</h2>
+      {items.length ? (
+        <ul className="space-y-2 text-sm">
+          {items.map((i) => (
+            <li key={i.key} className="flex items-center gap-2">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={`https://github.com/${i.login}.png?size=40`} alt="" width={20} height={20} className="rounded-full" />
+              <a href={i.href} target="_blank" className="truncate hover:text-accent">
+                {i.label ?? i.login}
+              </a>
+              {i.extra && <span className="text-xs text-zinc-500">{i.extra}</span>}
+              <span className="ml-auto shrink-0 text-xs text-zinc-500">{new Date(i.at).toLocaleDateString()}</span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="text-sm text-zinc-500">{empty}</p>
+      )}
+    </section>
+  );
+}
+
 function Table({ title, headers, rows }: { title: string; headers: string[]; rows: (string | number)[][] }) {
   return (
-    <section className="rounded-xl border border-zinc-800 p-4">
+    <section className="min-w-0 rounded-xl border border-zinc-800 p-4">
       <h2 className="mb-3 text-sm font-medium text-zinc-400">{title}</h2>
       {rows.length ? (
         <table className="w-full text-sm">

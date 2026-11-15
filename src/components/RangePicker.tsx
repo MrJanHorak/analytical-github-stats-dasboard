@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { RANGES } from "@/lib/utils";
+import { RANGES, rangeLabel, rangeParam } from "@/lib/utils";
 
 export function RangePicker({ current, basePath }: { current: number; basePath: string }) {
   return (
@@ -7,10 +7,10 @@ export function RangePicker({ current, basePath }: { current: number; basePath: 
       {RANGES.map((r) => (
         <Link
           key={r}
-          href={`${basePath}?range=${r}`}
+          href={`${basePath}?range=${rangeParam(r)}`}
           className={`rounded-md px-3 py-1 ${r === current ? "bg-zinc-800 text-white" : "text-zinc-400 hover:text-white"}`}
         >
-          {r}d
+          {rangeLabel(r)}
         </Link>
       ))}
     </div>

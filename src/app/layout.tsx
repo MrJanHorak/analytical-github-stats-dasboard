@@ -18,7 +18,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             </Link>
             <a
               href="https://docs.github.com/en/rest/metrics/traffic"
-              className="text-xs text-zinc-500 hover:text-zinc-300"
+              className="hidden text-xs text-zinc-500 hover:text-zinc-300 sm:block"
               target="_blank"
             >
               GitHub keeps traffic for 14 days — this app keeps it forever

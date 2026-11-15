@@ -5,7 +5,7 @@ import { SetupNotice } from "@/components/SetupNotice";
 import { StatCard } from "@/components/StatCard";
 import { isDbConfigured } from "@/lib/db";
 import { getOverview } from "@/lib/queries";
-import { fmt, parseRange } from "@/lib/utils";
+import { fmt, parseRange, rangeParam, rangeText } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
 
@@ -14,7 +14,8 @@ export default async function Overview({ searchParams }: { searchParams: Promise
   const range = parseRange((await searchParams).range);
   const data = await getOverview(range);
   if (!data.repos.length) return <SetupNotice />;
-  const { totals } = data;
+  const { totals, previous } = data;
+  const rt = rangeText(range);
 
   return (
     <div className="space-y-6">
@@ -23,36 +24,38 @@ export default async function Overview({ searchParams }: { searchParams: Promise
           <h1 className="text-2xl font-semibold">All repositories</h1>
           <p className="text-sm text-zinc-500">
             Last sync: {data.lastRun?.finishedAt ? new Date(data.lastRun.finishedAt).toLocaleString() : "never"}
+            {range === 0 && <> · history since {data.since}</>}
           </p>
         </div>
-        <RangePicker current={range} basePath="/" />
+        <div className="flex flex-wrap items-center gap-2">
+          <ExportMenu range={range} />
+          <RangePicker current={range} basePath="/" />
+        </div>
       </div>
 
       <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-6">
-        <StatCard label="Views" value={totals.views} sub={`last ${range}d`} />
-        <StatCard label="Unique visitors" value={totals.viewUniques} sub="sum of daily uniques" />
-        <StatCard label="Clones" value={totals.clones} sub={`last ${range}d`} />
-        <StatCard label="Unique cloners" value={totals.cloneUniques} sub="sum of daily uniques" />
-        <StatCard label="Stars" value={totals.stars} delta={totals.starsDelta} sub={`in ${range}d`} />
-        <StatCard label="Forks" value={totals.forks} delta={totals.forksDelta} sub={`in ${range}d`} />
+        <StatCard label="Views" value={totals.views} previous={previous?.views} sub={rt} />
+        <StatCard label="Unique visitors" value={totals.viewUniques} previous={previous?.viewUniques} sub="Σ daily uniques" />
+        <StatCard label="Clones" value={totals.clones} previous={previous?.clones} sub={rt} />
+        <StatCard label="Unique cloners" value={totals.cloneUniques} previous={previous?.cloneUniques} sub="Σ daily uniques" />
+        <StatCard label="Stars" value={totals.stars} delta={totals.starsDelta} sub={rt} />
+        <StatCard label="Forks" value={totals.forks} delta={totals.forksDelta} sub={rt} />
       </div>
 
-      <section className="rounded-xl border border-zinc-800 p-4">
-        <h2 className="mb-3 text-sm font-medium text-zinc-400">Daily traffic, all repos</h2>
-        <TimeSeriesChart
-          data={data.daily}
-          area
-          series={[
-            { key: "views", label: "Views", color: "#2f81f7" },
-            { key: "viewUniques", label: "Visitors", color: "#a371f7" },
-            { key: "clones", label: "Clones", color: "#3fb950" },
-          ]}
-        />
-      </section>
-
-      <div className="grid gap-6 lg:grid-cols-[1fr_280px]">
-        <RepoTable repos={data.repos} range={range} />
-        <section className="rounded-xl border border-zinc-800 p-4">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_280px]">
+        <section className="min-w-0 rounded-xl border border-zinc-800 p-4">
+          <h2 className="mb-3 text-sm font-medium text-zinc-400">Daily traffic, all repos</h2>
+          <TimeSeriesChart
+            data={data.daily}
+            area
+            series={[
+              { key: "views", label: "Views", color: "#2f81f7" },
+              { key: "viewUniques", label: "Visitors", color: "#a371f7" },
+              { key: "clones", label: "Clones", color: "#3fb950" },
+            ]}
+          />
+        </section>
+        <section className="min-w-0 rounded-xl border border-zinc-800 p-4">
           <h2 className="mb-3 text-sm font-medium text-zinc-400">Top referrers (last 14d)</h2>
           {data.topReferrers.length ? (
             <ul className="space-y-2 text-sm">
@@ -68,6 +71,23 @@ export default async function Overview({ searchParams }: { searchParams: Promise
           )}
         </section>
       </div>
+
+      <RepoTable repos={data.repos} range={range} />
+    </div>
+  );
+}
+
+function ExportMenu({ range }: { range: number }) {
+  const r = rangeParam(range);
+  const cls = "rounded-md border border-zinc-800 px-2.5 py-1 text-xs text-zinc-400 hover:border-zinc-600 hover:text-white";
+  return (
+    <div className="flex gap-1">
+      <a className={cls} href={`/api/export?kind=repos&range=${r}`}>
+        ⬇ Repos CSV
+      </a>
+      <a className={cls} href={`/api/export?kind=daily&range=${r}`}>
+        ⬇ Daily CSV
+      </a>
     </div>
   );
 }

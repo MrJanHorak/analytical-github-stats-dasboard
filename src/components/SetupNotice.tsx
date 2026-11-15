@@ -8,7 +8,7 @@ export function SetupNotice() {
           and <code>CRON_SECRET</code>.
         </li>
         <li>
-          Create the tables: <code>npm run db:push</code>
+          Create the tables: <code>npm run db:migrate</code> (or preview with fake data: <code>npm run seed:demo</code>)
         </li>
         <li>
           Collect data: <code>npm run sync</code> (Vercel Cron does this daily once deployed).
