@@ -3,7 +3,7 @@ import { getDb, schema } from "./db";
 import { crossedMilestones, detectSpike, fillDaily } from "./transform";
 import { daysAgo, fmt } from "./utils";
 
-const { alerts, repos, repoSnapshots, starEvents, trafficDaily } = schema;
+const { alerts, alertSettings, repos, repoSnapshots, starEvents, trafficDaily } = schema;
 
 export const STAR_MILESTONES = [10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 25000, 50000] as const;
 
@@ -37,6 +37,22 @@ export function alertConfigFromEnv(env: NodeJS.ProcessEnv = process.env): AlertC
 }
 
 type NewAlert = typeof alerts.$inferInsert;
+export type AlertOverride = Omit<typeof alertSettings.$inferSelect, "repoId" | "updatedAt">;
+
+/**
+ * One repo's thresholds: its overrides where set, the global settings otherwise. Muted repos get
+ * none; `milestones: false` turns off only the star-milestone alerts.
+ */
+export function effectiveConfig(global: AlertConfig, o?: AlertOverride | null) {
+  return {
+    muted: !!o?.muted,
+    spikeFactor: o?.spikeFactor ?? global.spikeFactor,
+    minViews: o?.minViews ?? global.minViews,
+    minClones: o?.minClones ?? global.minClones,
+    starBurst: o?.starBurst ?? global.starBurst,
+    milestones: o?.milestones ?? true,
+  };
+}
 
 /**
  * Look at the last complete UTC day (yesterday — today is still partial) and record alerts.
@@ -49,7 +65,7 @@ export async function evaluateAlerts(config = alertConfigFromEnv()) {
   const day = daysAgo(1);
   const since = daysAgo(15); // 14-day baseline + the day itself
 
-  const [allRepos, traffic, stars, snapshots] = await Promise.all([
+  const [allRepos, traffic, stars, snapshots, overrides] = await Promise.all([
     db.select({ id: repos.id, fullName: repos.fullName }).from(repos),
     db
       .select()
@@ -71,7 +87,9 @@ export async function evaluateAlerts(config = alertConfigFromEnv()) {
         rn: sql<number>`row_number() over (partition by ${repoSnapshots.repoId} order by ${repoSnapshots.date} desc)`.as("rn"),
       })
       .from(repoSnapshots),
+    db.select().from(alertSettings),
   ]);
+  const overrideBy = new Map(overrides.map((o) => [o.repoId, o]));
 
   const byRepo = new Map<number, (typeof traffic)[number][]>();
   for (const t of traffic) {
@@ -87,13 +105,15 @@ export async function evaluateAlerts(config = alertConfigFromEnv()) {
 
   const candidates: NewAlert[] = [];
   for (const r of allRepos) {
+    const cfg = effectiveConfig(config, overrideBy.get(r.id));
+    if (cfg.muted) continue;
     const rows = byRepo.get(r.id) ?? [];
     // Only judge repos whose stored history actually reaches back far enough
     const firstDay = rows.reduce((m, x) => (x.date < m ? x.date : m), day);
     const history = fillDaily(rows, "views", firstDay, day);
     const cloneHistory = fillDaily(rows, "clones", firstDay, day);
 
-    const v = detectSpike(history, { factor: config.spikeFactor, minValue: config.minViews, minBaselineDays: config.baselineDays });
+    const v = detectSpike(history, { factor: cfg.spikeFactor, minValue: cfg.minViews, minBaselineDays: config.baselineDays });
     if (v.spike) {
       candidates.push({
         repoId: r.id,
@@ -104,7 +124,7 @@ export async function evaluateAlerts(config = alertConfigFromEnv()) {
         message: `${r.fullName}: ${fmt(v.value)} views on ${day} (${(v.value / Math.max(v.baseline, 1)).toFixed(1)}× the usual ${v.baseline.toFixed(0)}/day)`,
       });
     }
-    const c = detectSpike(cloneHistory, { factor: config.spikeFactor, minValue: config.minClones, minBaselineDays: config.baselineDays });
+    const c = detectSpike(cloneHistory, { factor: cfg.spikeFactor, minValue: cfg.minClones, minBaselineDays: config.baselineDays });
     if (c.spike) {
       candidates.push({
         repoId: r.id,
@@ -117,7 +137,7 @@ export async function evaluateAlerts(config = alertConfigFromEnv()) {
     }
 
     const gained = starsBy.get(r.id) ?? 0;
-    if (gained >= config.starBurst) {
+    if (gained >= cfg.starBurst) {
       candidates.push({
         repoId: r.id,
         date: day,
@@ -128,7 +148,7 @@ export async function evaluateAlerts(config = alertConfigFromEnv()) {
     }
 
     const [latest, previous] = snapsBy.get(r.id) ?? [];
-    if (latest && previous) {
+    if (cfg.milestones && latest && previous) {
       for (const m of crossedMilestones(previous.stars, latest.stars, STAR_MILESTONES)) {
         candidates.push({
           repoId: r.id,

@@ -24,6 +24,7 @@ import {
   mergeTraffic,
   monthlyCodeFrequency,
   outdatedFrameworks,
+  parseAlertOverride,
   shortDuration,
   weeklyIssueFlow,
   pctChange,
@@ -477,5 +478,24 @@ describe("codeHistory", () => {
     ]);
     expect(codeHistory(snaps, "2026-11-03", "2026-11-03")).toEqual([{ date: "2026-11-03", lines: 150, tests: 10 }]);
     expect(codeHistory([], "2026-11-01", "2026-11-02")).toEqual([]);
+  });
+});
+
+describe("parseAlertOverride", () => {
+  const form = (o: Record<string, string>) => (k: string) => o[k] ?? null;
+  it("reads blanks as defaults, clamps values, and returns null when everything is default", () => {
+    expect(parseAlertOverride(form({ milestones: "on" }))).toBeNull();
+    expect(parseAlertOverride(form({ milestones: "on", spikeFactor: " ", minViews: "" }))).toBeNull();
+    expect(parseAlertOverride(form({ milestones: "on", spikeFactor: "0.5", minViews: "-3", starBurst: "2.6", minClones: "abc" }))).toEqual({
+      muted: false,
+      milestones: true,
+      spikeFactor: 1.1,
+      minViews: 0,
+      minClones: null,
+      starBurst: 3,
+    });
+    // An unchecked checkbox sends nothing: milestones off is a real override
+    expect(parseAlertOverride(form({}))).toMatchObject({ milestones: false });
+    expect(parseAlertOverride(form({ muted: "on", milestones: "on" }))).toMatchObject({ muted: true });
   });
 });

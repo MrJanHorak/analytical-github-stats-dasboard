@@ -1,5 +1,6 @@
 import { and, asc, desc, eq, gte, inArray, lt, or, sql, type AnyColumn } from "drizzle-orm";
 import { getDb, schema } from "./db";
+import { alertConfigFromEnv, effectiveConfig } from "./alerts";
 import { CATEGORIES } from "./frameworks";
 import {
   aggregateContributedRepos,
@@ -50,6 +51,8 @@ const {
   codeSnapshots,
   deployments,
   packageVersions,
+  releases,
+  alertSettings,
 } = schema;
 
 type Totals = { views: number; viewUniques: number; clones: number; cloneUniques: number };
@@ -372,7 +375,7 @@ export async function getOverview(rangeDays: number) {
     { ...ZERO },
   );
 
-  const [recentAlerts, notes] = await Promise.all([
+  const [recentAlerts, notes, releaseRows] = await Promise.all([
     db
       .select({ alert: alerts, fullName: repos.fullName })
       .from(alerts)
@@ -386,6 +389,13 @@ export async function getOverview(rangeDays: number) {
       .innerJoin(repos, eq(repos.id, annotations.repoId))
       .where(gte(annotations.date, since))
       .orderBy(asc(annotations.date)),
+    // Releases of your own repos (pre-releases left out to keep the overview chart readable)
+    db
+      .select({ publishedAt: releases.publishedAt, tag: releases.tag, name: repos.name })
+      .from(releases)
+      .innerJoin(repos, eq(repos.id, releases.repoId))
+      .where(and(gte(releases.publishedAt, new Date(since + "T00:00:00Z")), eq(releases.prerelease, false), eq(repos.isFork, false)))
+      .orderBy(asc(releases.publishedAt)),
   ]);
 
   const sum = (k: "views" | "viewUniques" | "clones" | "cloneUniques" | "stars" | "forks" | "starsDelta" | "forksDelta") =>
@@ -395,7 +405,10 @@ export async function getOverview(rangeDays: number) {
     since,
     recentAlerts: recentAlerts.map((a) => ({ ...a.alert, fullName: a.fullName })),
     /** Chart markers across all repos */
-    markers: notes.map((n) => ({ date: n.date, label: `${n.name}: ${n.label}` })),
+    markers: [
+      ...notes.map((n) => ({ date: n.date, label: `${n.name}: ${n.label}`, kind: "note" as const })),
+      ...releaseRows.map((r) => ({ date: isoDay(r.publishedAt), label: `🚀 ${r.name} ${r.tag}`, kind: "release" as const })),
+    ],
     repos: rows,
     daily,
     topReferrers: referrerTrends,
@@ -457,7 +470,7 @@ export async function getRepoDetail(owner: string, name: string, rangeDays: numb
   const latestFor = (table: typeof referrers | typeof popularPaths | typeof releaseAssets) =>
     sql`${table.date} = (select max(date) from ${table} where repo_id = ${repo.id})`;
 
-  const [daily, prev, latestSnap, refs, paths, assets, downloadsByDay, stars, forks, windows, refHistory, notes, repoAlerts, langs, loc, frameworks] = await Promise.all([
+  const [daily, prev, latestSnap, refs, paths, assets, downloadsByDay, stars, forks, windows, refHistory, notes, repoAlerts, langs, loc, frameworks, repoReleases, override] = await Promise.all([
     db
       .select()
       .from(trafficDaily)
@@ -520,6 +533,8 @@ export async function getRepoDetail(owner: string, name: string, rangeDays: numb
       })
       .from(repoFrameworks)
       .where(eq(repoFrameworks.repoId, repo.id)),
+    db.select().from(releases).where(eq(releases.repoId, repo.id)).orderBy(desc(releases.publishedAt)),
+    db.select().from(alertSettings).where(eq(alertSettings.repoId, repo.id)).limit(1),
   ]);
 
   // Trend for the referrers that matter most right now (top 5 in the latest window)
@@ -594,7 +609,18 @@ export async function getRepoDetail(owner: string, name: string, rangeDays: numb
     markers: [
       ...notes.filter((n) => n.date >= since).map((n) => ({ date: n.date, label: n.label, kind: "note" as const })),
       ...repoAlerts.filter((a) => a.date >= since).map((a) => ({ date: a.date, label: alertShortLabel(a.kind), kind: "alert" as const })),
+      ...repoReleases
+        .filter((r) => isoDay(r.publishedAt) >= since)
+        .map((r) => ({ date: isoDay(r.publishedAt), label: `🚀 ${r.tag}`, kind: "release" as const })),
     ],
+    /** Published releases, newest first */
+    releases: repoReleases.slice(0, 10).map((r) => ({ tag: r.tag, name: r.name, publishedAt: r.publishedAt, prerelease: r.prerelease, url: r.url })),
+    /** This repo's alert overrides (null = global defaults) and the thresholds in effect */
+    alertSettings: {
+      override: override[0] ?? null,
+      defaults: (({ spikeFactor, minViews, minClones, starBurst }) => ({ spikeFactor, minViews, minClones, starBurst }))(alertConfigFromEnv()),
+      effective: effectiveConfig(alertConfigFromEnv(), override[0]),
+    },
     current: { stars: latestSnap[0]?.stars ?? stars.length, forks: latestSnap[0]?.forks ?? forks.length },
     starsGained: stars.filter((s) => s.starredAt >= sinceTs).length,
     forksGained: forks.filter((f) => f.createdAt >= sinceTs).length,

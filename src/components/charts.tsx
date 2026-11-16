@@ -15,9 +15,9 @@ import {
 } from "recharts";
 
 type Series = { key: string; label: string; color: string; dashed?: boolean };
-export type Marker = { date: string; label: string; kind?: "note" | "alert" };
+export type Marker = { date: string; label: string; kind?: "note" | "alert" | "release" };
 
-const MARKER_COLOR = { note: "#a1a1aa", alert: "#d29922" } as const;
+const MARKER_COLOR = { note: "#a1a1aa", alert: "#d29922", release: "#3fb950" } as const;
 
 const axis = { stroke: "#52525b", fontSize: 11, tickLine: false, axisLine: false } as const;
 const tooltip = {
@@ -84,7 +84,8 @@ export function TimeSeriesChart({
         />
         <Legend wrapperStyle={{ fontSize: 12 }} />
         {[...byDate].map(([date, ms]) => {
-          const color = MARKER_COLOR[ms.some((m) => m.kind === "alert") ? "alert" : "note"];
+          // Several markers on one day: alerts win, then releases, then notes
+          const color = MARKER_COLOR[ms.some((m) => m.kind === "alert") ? "alert" : ms.some((m) => m.kind === "release") ? "release" : "note"];
           const text = markerText(date);
           return (
             <ReferenceLine
@@ -94,7 +95,14 @@ export function TimeSeriesChart({
               strokeDasharray="3 3"
               label={
                 labelled.has(date)
-                  ? { value: text.length > 22 ? text.slice(0, 21) + "…" : text, position: "insideTopRight", fill: color, fontSize: 10 }
+                  ? {
+                      value: text.length > 22 ? text.slice(0, 21) + "…" : text,
+                      position: "insideTopRight",
+                      // Alternate two rows so neighbouring labels don't run into each other
+                      offset: [...labelled].indexOf(date) % 2 ? 18 : 5,
+                      fill: color,
+                      fontSize: 10,
+                    }
                   : undefined
               }
             />

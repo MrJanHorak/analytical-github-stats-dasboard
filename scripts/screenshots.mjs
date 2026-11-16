@@ -14,9 +14,10 @@ const REPO = "demo/balsa-glider-designer";
 
 const browser = await chromium.launch({ channel: process.env.CHROME_CHANNEL, args: ["--no-sandbox"] });
 
-async function shoot(name, path, { width = 1360, height = 1000, section } = {}) {
+async function shoot(name, path, { width = 1360, height = 1000, section, click } = {}) {
   const page = await browser.newPage({ viewport: { width, height }, deviceScaleFactor: 1 });
   await page.goto(BASE + path, { waitUntil: "networkidle" });
+  if (click) await page.getByText(click).first().click(); // e.g. open a <details>
   await page.waitForTimeout(600);
   const file = new URL(`${name}.png`, OUT);
   if (section) {
@@ -42,6 +43,7 @@ await shoot("your-activity", "/me", { height: 1300 });
 await shoot("frameworks", "/?range=30", { section: "Frameworks & tools" });
 await shoot("code-health", "/?range=90", { section: "Code health" });
 await shoot("deployments", "/?range=90", { section: "Deployments" });
+await shoot("alert-settings", `/repo/${REPO}?range=90`, { section: "Notes & alerts", click: "Alert settings" });
 await shoot("issues-prs", "/?range=90", { section: "Issues & pull requests" });
 await shoot("actions-ci", "/?range=90", { section: "GitHub Actions" });
 await shoot("community-health", `/repo/${REPO}?range=90`, { section: "Community health" });

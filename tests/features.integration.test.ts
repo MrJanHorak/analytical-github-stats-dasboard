@@ -129,7 +129,7 @@ describe("notes", () => {
     let d = (await getRepoDetail("jan", "rocket", 30))!;
     expect(d.notes.map((n) => n.label)).toEqual(["Posted on Hacker News"]);
     expect(d.markers).toContainEqual({ date: daysAgo(1), label: "Posted on Hacker News", kind: "note" });
-    expect((await getOverview(30)).markers).toContainEqual({ date: daysAgo(1), label: "rocket: Posted on Hacker News" });
+    expect((await getOverview(30)).markers).toContainEqual({ date: daysAgo(1), label: "rocket: Posted on Hacker News", kind: "note" });
 
     // A note can't be deleted through another repo's form
     const wrong = new FormData();
@@ -144,6 +144,66 @@ describe("notes", () => {
     await deleteNote(del);
     d = (await getRepoDetail("jan", "rocket", 30))!;
     expect(d.notes).toEqual([]);
+  });
+});
+
+describe("per-repo alert settings", () => {
+  const save = async (fields: Record<string, string>) => {
+    const { saveAlertSettings } = await import("@/app/repo/[owner]/[name]/actions");
+    const fd = new FormData();
+    fd.set("repo", "jan/rocket");
+    for (const [k, v] of Object.entries(fields)) fd.set(k, v);
+    await saveAlertSettings(fd);
+  };
+  const rocketKinds = async () => {
+    await pg.exec("delete from alerts");
+    return (await evaluateAlerts(config)).filter((a) => a.repoId === 1).map((a) => a.kind).sort();
+  };
+
+  it("mutes a repo, raises its thresholds, turns milestones off — and resets", async () => {
+    expect(await rocketKinds()).toEqual(["stars_burst", "stars_milestone_10", "views_spike"]);
+
+    await save({ muted: "on", milestones: "on" });
+    expect(await rocketKinds()).toEqual([]);
+    // Other repos are unaffected
+    expect((await evaluateAlerts(config)).length).toBe(0); // already recorded above for repo 3
+    expect((await pg.query("select count(*)::int as n from alerts where repo_id = 3")).rows[0]).toEqual({ n: 1 });
+
+    // 120 views is no longer a spike at a 200-view minimum; 6 stars isn't a burst at 10; no milestones
+    await save({ minViews: "200", starBurst: "10" });
+    expect(await rocketKinds()).toEqual([]);
+    await save({ minViews: "200", milestones: "on" });
+    expect(await rocketKinds()).toEqual(["stars_burst", "stars_milestone_10"]);
+
+    const d = (await getRepoDetail("jan", "rocket", 30))!;
+    expect(d.alertSettings.override).toMatchObject({ muted: false, minViews: 200, starBurst: null, milestones: true });
+    expect(d.alertSettings.defaults).toMatchObject({ minViews: 25, starBurst: 5 });
+    expect(d.alertSettings.effective).toMatchObject({ minViews: 200, starBurst: 5 });
+
+    await save({ reset: "1" });
+    expect((await getRepoDetail("jan", "rocket", 30))!.alertSettings.override).toBeNull();
+    expect(await rocketKinds()).toEqual(["stars_burst", "stars_milestone_10", "views_spike"]);
+  });
+});
+
+describe("release markers", () => {
+  it("marks releases on the repo chart (pre-releases too) and the overview (not pre-releases, not forks)", async () => {
+    await pg.exec(`
+      insert into repos (id, owner, name, full_name, html_url, private, fork) values (9, 'jan', 'forked', 'jan/forked', 'x', false, true);
+      insert into releases (repo_id, release_id, tag, name, published_at, prerelease, url) values
+        (1, 101, 'v1.0.0', 'First', '${daysAgo(3)}T15:00:00Z', false, 'https://github.com/jan/rocket/releases/v1.0.0'),
+        (1, 102, 'v1.1.0-beta', null, '${daysAgo(2)}T15:00:00Z', true, null),
+        (1, 100, 'v0.1.0', null, '${daysAgo(200)}T15:00:00Z', false, null),
+        (9, 900, 'v9', null, '${daysAgo(2)}T15:00:00Z', false, null);
+    `);
+    const d = (await getRepoDetail("jan", "rocket", 30))!;
+    expect(d.markers.filter((m) => m.kind === "release")).toEqual([
+      { date: daysAgo(2), label: "🚀 v1.1.0-beta", kind: "release" },
+      { date: daysAgo(3), label: "🚀 v1.0.0", kind: "release" },
+    ]);
+    expect(d.releases.map((r) => r.tag)).toEqual(["v1.1.0-beta", "v1.0.0", "v0.1.0"]);
+    const o = await getOverview(30);
+    expect(o.markers.filter((m) => m.kind === "release")).toEqual([{ date: daysAgo(3), label: "🚀 rocket v1.0.0", kind: "release" }]);
   });
 });
 
