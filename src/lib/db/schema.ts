@@ -272,3 +272,69 @@ export const profileSnapshots = pgTable(
   },
   (t) => [primaryKey({ columns: [t.login, t.date] })],
 );
+
+// --- Repo activity (M3.7) ------------------------------------------------------------------------
+
+/** Issues and pull requests (incrementally synced; GitHub's issues list includes PRs). */
+export const issues = pgTable(
+  "issues",
+  {
+    repoId: repoId(),
+    number: integer("number").notNull(),
+    isPr: boolean("is_pr").notNull(),
+    title: text("title").notNull(),
+    author: text("author"),
+    /** OWNER / MEMBER / COLLABORATOR = you and your team; anything else = outside contributor */
+    authorAssociation: text("author_association").notNull(),
+    isBot: boolean("is_bot").notNull(),
+    state: text("state").notNull(), // open | closed
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+    closedAt: timestamp("closed_at", { withTimezone: true }),
+    mergedAt: timestamp("merged_at", { withTimezone: true }),
+  },
+  (t) => [primaryKey({ columns: [t.repoId, t.number] }), index("issues_created_idx").on(t.createdAt)],
+);
+
+/** GitHub Actions workflow runs (first sync: the last 90 days; then incremental). */
+export const workflowRuns = pgTable(
+  "workflow_runs",
+  {
+    repoId: repoId(),
+    runId: bigint("run_id", { mode: "number" }).notNull(),
+    workflow: text("workflow").notNull(),
+    event: text("event").notNull(),
+    branch: text("branch"),
+    status: text("status").notNull(),
+    conclusion: text("conclusion"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.repoId, t.runId] }), index("workflow_runs_created_idx").on(t.createdAt)],
+);
+
+/**
+ * Current community health + open Dependabot alerts per repo, plus the activity sync's markers.
+ * Null health = GitHub has no community profile for the repo (private). Null Dependabot = no
+ * permission or alerts disabled. actions_available = false when the token can't read Actions.
+ */
+export const repoHealth = pgTable("repo_health", {
+  repoId: repoId().primaryKey(),
+  healthPercentage: integer("health_percentage"),
+  hasReadme: boolean("has_readme"),
+  hasLicense: boolean("has_license"),
+  hasCodeOfConduct: boolean("has_code_of_conduct"),
+  hasContributing: boolean("has_contributing"),
+  hasIssueTemplate: boolean("has_issue_template"),
+  hasPrTemplate: boolean("has_pr_template"),
+  hasDescription: boolean("has_description"),
+  healthCheckedAt: timestamp("health_checked_at", { withTimezone: true }),
+  dependabotCritical: integer("dependabot_critical"),
+  dependabotHigh: integer("dependabot_high"),
+  dependabotMedium: integer("dependabot_medium"),
+  dependabotLow: integer("dependabot_low"),
+  actionsAvailable: boolean("actions_available"),
+  issuesSyncedAt: timestamp("issues_synced_at", { withTimezone: true }),
+  runsSyncedAt: timestamp("runs_synced_at", { withTimezone: true }),
+  activitySyncedAt: timestamp("activity_synced_at", { withTimezone: true }),
+});
