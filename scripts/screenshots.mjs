@@ -36,6 +36,8 @@ await shoot("repo-detail", `/repo/${REPO}?range=90`);
 await shoot("star-history", `/repo/${REPO}?range=all`, { section: "Stars & forks over time" });
 await shoot("referrer-trend", `/repo/${REPO}?range=30`, { section: "Referrer trend" });
 await shoot("notes-alerts", `/repo/${REPO}?range=90`, { section: "Notes & alerts" });
+await shoot("languages", "/?range=30", { section: "Languages across your repos" });
+await shoot("lines-of-code", "/?range=30", { section: "Lines of code" });
 await shoot("mobile", "/?range=30", { width: 390, height: 844 });
 
 for (const metric of ["views", "visitors", "stars"]) {

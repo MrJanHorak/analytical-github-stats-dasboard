@@ -78,6 +78,17 @@ export async function fetchLanguages(owner: string, repo: string) {
   return data;
 }
 
+/**
+ * Weekly [week, additions, deletions] over the repo's whole history (deletions are negative).
+ * Returns null while GitHub is still computing (202) and [] for an empty repo (204).
+ * GitHub answers 422 for repos with 10,000+ commits — that error is left to the caller.
+ */
+export async function fetchCodeFrequency(owner: string, repo: string): Promise<number[][] | null> {
+  const res = await getOctokit().rest.repos.getCodeFrequencyStats({ owner, repo });
+  if ((res.status as number) === 202) return null;
+  return Array.isArray(res.data) ? res.data : [];
+}
+
 /** Weekly commit counts for the last year. GitHub returns 202 while computing; we return [] then. */
 export async function fetchCommitActivity(owner: string, repo: string) {
   const res = await getOctokit().rest.repos.getCommitActivityStats({ owner, repo });

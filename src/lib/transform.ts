@@ -150,3 +150,46 @@ export function toCsv(rows: Record<string, unknown>[], columns?: string[]): stri
   };
   return [cols.join(","), ...rows.map((r) => cols.map((c) => esc(r[c])).join(","))].join("\n") + "\n";
 }
+
+/**
+ * Approximate current line count from GitHub's weekly code_frequency: total lines added minus deleted.
+ * Counts every file (lockfiles included), so treat it as a rough size, not an exact LOC.
+ */
+export function netLines(weeks: number[][]): number {
+  const total = weeks.reduce((a, [, add = 0, del = 0]) => a + add + del, 0);
+  return Math.max(0, total);
+}
+
+/** Sum bytes per language across repos, largest first, with how many repos use each. */
+export function aggregateLanguages(rows: { repoId: number; language: string; bytes: number }[]) {
+  const by = new Map<string, { language: string; bytes: number; repos: number }>();
+  for (const r of rows) {
+    const cur = by.get(r.language) ?? { language: r.language, bytes: 0, repos: 0 };
+    cur.bytes += r.bytes;
+    cur.repos += 1;
+    by.set(r.language, cur);
+  }
+  return [...by.values()].sort((a, b) => b.bytes - a.bytes || a.language.localeCompare(b.language));
+}
+
+/** Keep the top `n` entries and fold the rest into one "Other" entry (bytes only). */
+export function topWithOther<T extends { language: string; bytes: number }>(
+  items: T[],
+  n: number,
+): (T | { language: string; bytes: number })[] {
+  if (items.length <= n) return items;
+  const rest = items.slice(n).reduce((a, i) => a + i.bytes, 0);
+  return [...items.slice(0, n), { language: "Other", bytes: rest }];
+}
+
+export const AUTOMATED_MIN_CLONES = 10;
+
+/**
+ * Heuristic only — GitHub reports no user agents, so there is no way to know who cloned.
+ * People usually look at a repo before cloning it; CI runs, mirrors and deploy hosts
+ * (Vercel/Netlify clone on every build) clone without viewing. So many clones with
+ * comparatively few views most likely means automation.
+ */
+export function likelyAutomated({ views, clones }: { views: number; clones: number }): boolean {
+  return clones >= AUTOMATED_MIN_CLONES && clones > 2 * views;
+}

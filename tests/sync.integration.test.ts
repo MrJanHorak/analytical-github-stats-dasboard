@@ -12,7 +12,7 @@ import * as gh from "@/lib/github";
 import { getExportData, getOverview, getRepoDetail } from "@/lib/queries";
 import { runSync } from "@/lib/sync";
 import { toCsv } from "@/lib/transform";
-import { daysAgo } from "@/lib/utils";
+import { daysAgo, isoDay } from "@/lib/utils";
 
 vi.mock("@/lib/github", () => ({
   listOwnedRepos: vi.fn(),
@@ -21,6 +21,7 @@ vi.mock("@/lib/github", () => ({
   fetchStargazers: vi.fn(),
   fetchForks: vi.fn(),
   fetchLanguages: vi.fn(),
+  fetchCodeFrequency: vi.fn(),
   fetchCommitActivity: vi.fn(),
 }));
 const m = vi.mocked(gh);
@@ -92,6 +93,11 @@ beforeEach(() => {
   m.fetchForks.mockResolvedValue([
     { forkId: 500, fullName: "someone/alpha", owner: "someone", stars: 1, createdAt: ts(5) },
   ]);
+  m.fetchLanguages.mockResolvedValue({ TypeScript: 9000, CSS: 1000 });
+  m.fetchCodeFrequency.mockResolvedValue([
+    [1700000000, 100, -20],
+    [1700604800, 50, -30],
+  ]);
 });
 
 describe("runSync", () => {
@@ -100,6 +106,21 @@ describe("runSync", () => {
     expect(result.errors).toEqual([]);
     expect(result.reposSynced).toBe(1); // archived repo has no traffic API
     expect(result.historyPending).toBe(0);
+    expect(result.codeStatsPending).toBe(0);
+
+    // Languages + approximate lines (100 + 50 added, 20 + 30 deleted)
+    const code = await pg.query<{ lines_of_code: number; code_stats_pushed_at: Date }>(
+      "select lines_of_code, code_stats_pushed_at from repos where id = 1",
+    );
+    expect(code.rows[0].lines_of_code).toBe(100);
+    expect(code.rows[0].code_stats_pushed_at).toBeTruthy();
+    const langs = await pg.query<{ language: string; bytes: number }>(
+      "select language, bytes::int as bytes from repo_languages where repo_id = 1 order by bytes desc",
+    );
+    expect(langs.rows).toEqual([
+      { language: "TypeScript", bytes: 9000 },
+      { language: "CSS", bytes: 1000 },
+    ]);
 
     // Archived repos skip the traffic endpoints
     expect(m.fetchTraffic).toHaveBeenCalledTimes(1);
@@ -112,6 +133,19 @@ describe("runSync", () => {
       { date: daysAgo(2), views: 10, clones: 0 },
       { date: daysAgo(1), views: 20, clones: 3 },
     ]);
+  });
+
+  it("treats a 403 on stargazers as unavailable star history, not an error", async () => {
+    m.listOwnedRepos.mockResolvedValue([repo(1, "alpha", { stargazers_count: 7 })] as never);
+    m.fetchStargazers.mockRejectedValue(Object.assign(new Error("Resource not accessible"), { status: 403 }));
+    const result = await runSync();
+    expect(result.errors).toEqual([]);
+    expect(result.starHistoryUnavailable).toEqual(["jan/alpha"]);
+    expect(result.reposSynced).toBe(1);
+    // Other failures on the same endpoint are still reported
+    m.fetchStargazers.mockRejectedValue(Object.assign(new Error("boom"), { status: 500 }));
+    const again = await runSync();
+    expect(again.errors).toEqual([{ repo: "jan/alpha (stars)", error: "boom" }]);
   });
 
   it("is idempotent and corrects partial days on re-run", async () => {
@@ -128,6 +162,9 @@ describe("runSync", () => {
     // Star count unchanged since last run → stargazers not refetched
     expect(m.fetchStargazers).not.toHaveBeenCalled();
     expect(m.fetchForks).not.toHaveBeenCalled();
+    // Not pushed since languages/lines were computed → not refetched
+    expect(m.fetchLanguages).not.toHaveBeenCalled();
+    expect(m.fetchCodeFrequency).not.toHaveBeenCalled();
   });
 
   it("refetches stargazers when the count changes (handles un-stars)", async () => {
@@ -162,16 +199,19 @@ describe("runSync", () => {
     const first = await runSync({ timeBudgetMs: -1 }); // already out of time
     expect(first.reposSynced).toBe(2); // traffic always collected
     expect(first.historyPending).toBe(1);
+    expect(first.codeStatsPending).toBe(1); // "big" is new; no waiting/retrying once out of time
     expect(m.fetchStargazers).not.toHaveBeenCalled();
+    expect(m.fetchLanguages).not.toHaveBeenCalled();
 
     const second = await runSync({ timeBudgetMs: 60_000 });
     expect(second.historyPending).toBe(0);
+    expect(second.codeStatsPending).toBe(0);
     expect(m.fetchStargazers).toHaveBeenCalledWith("jan", "big");
     const rows = await pg.query<{ n: number }>("select count(*)::int as n from star_events where repo_id = 3");
     expect(rows.rows[0].n).toBe(2);
 
     m.listOwnedRepos.mockResolvedValue([repo(1, "alpha"), repo(2, "archived-one", { archived: true, stargazers_count: 0, forks_count: 0 })] as never);
-    await pg.exec("delete from repos where id = 3; delete from star_events where repo_id = 3; delete from traffic_daily where repo_id = 3; delete from traffic_windows where repo_id = 3; delete from referrers where repo_id = 3; delete from popular_paths where repo_id = 3; delete from release_assets where repo_id = 3; delete from repo_snapshots where repo_id = 3");
+    await pg.exec("delete from repos where id = 3; delete from star_events where repo_id = 3; delete from traffic_daily where repo_id = 3; delete from traffic_windows where repo_id = 3; delete from referrers where repo_id = 3; delete from popular_paths where repo_id = 3; delete from release_assets where repo_id = 3; delete from repo_snapshots where repo_id = 3; delete from repo_languages where repo_id = 3");
     await runSync();
   });
 });
@@ -226,5 +266,64 @@ describe("dashboard queries", () => {
     const daily = await getExportData("daily", 30);
     expect(daily).toHaveLength(2);
     expect(daily[0]).toMatchObject({ repo: "jan/alpha", date: daysAgo(2) });
+  });
+});
+
+describe("code stats", () => {
+  // These run last: they change alpha's pushed_at and languages.
+  const pushedNow = `${isoDay()}T12:00:00Z`;
+
+  it("retries once while GitHub is still computing lines, then leaves it for the next run", async () => {
+    m.listOwnedRepos.mockResolvedValue([repo(1, "alpha", { pushed_at: pushedNow })] as never);
+    m.fetchLanguages.mockResolvedValue({ Python: 500 });
+    m.fetchCodeFrequency.mockResolvedValue(null);
+    const first = await runSync({ codeStatsRetryMs: 0 });
+    expect(first.errors).toEqual([]);
+    expect(first.codeStatsPending).toBe(1);
+    expect(m.fetchCodeFrequency).toHaveBeenCalledTimes(2);
+    // Languages are stored right away; the old line count stays until GitHub has the new one
+    const langs = await pg.query<{ language: string }>("select language from repo_languages where repo_id = 1");
+    expect(langs.rows.map((r) => r.language)).toEqual(["Python"]);
+    const before = await pg.query<{ lines_of_code: number }>("select lines_of_code from repos where id = 1");
+    expect(before.rows[0].lines_of_code).toBe(100);
+
+    m.fetchCodeFrequency.mockResolvedValue([[1700000000, 400, -10]]);
+    const second = await runSync({ codeStatsRetryMs: 0 });
+    expect(second.codeStatsPending).toBe(0);
+    const after = await pg.query<{ lines_of_code: number }>("select lines_of_code from repos where id = 1");
+    expect(after.rows[0].lines_of_code).toBe(390);
+  });
+
+  it("getOverview totals languages and lines across your own repos, leaving forks out", async () => {
+    await pg.exec(`
+      insert into repos (id, owner, name, full_name, html_url, fork, lines_of_code)
+        values (20, 'jan', 'someone-elses', 'jan/someone-elses', 'https://github.com/jan/someone-elses', true, 999999);
+      insert into repo_languages values (20, 'Go', 50000);
+    `);
+    const o = await getOverview(7);
+    expect(o.code.languages.map((l) => l.language)).not.toContain("Go");
+    // alpha is now Python; the archived repo still has TypeScript + CSS from the first sync
+    expect(o.code.languages).toEqual([
+      { language: "TypeScript", bytes: 9000, repos: 1 },
+      { language: "CSS", bytes: 1000, repos: 1 },
+      { language: "Python", bytes: 500, repos: 1 },
+    ]);
+    expect(o.code.linesOfCode).toBeLessThan(999999);
+    expect(o.code.largest[0]).toMatchObject({ name: "alpha", linesOfCode: 390 });
+    expect(o.repos.find((r) => r.name === "alpha")!.likelyAutomated).toBe(false); // 30 views, 3 clones
+
+    const d = (await getRepoDetail("jan", "alpha", 30))!;
+    expect(d.languages).toEqual([{ language: "Python", bytes: 500 }]);
+    expect(d.likelyAutomated).toBe(false);
+  });
+
+  it("marks lines as unknown when GitHub can't compute them (10k+ commits)", async () => {
+    m.listOwnedRepos.mockResolvedValue([repo(1, "alpha", { pushed_at: `${isoDay()}T18:00:00Z` })] as never);
+    m.fetchCodeFrequency.mockRejectedValue(Object.assign(new Error("too many commits"), { status: 422 }));
+    const r = await runSync({ codeStatsRetryMs: 0 });
+    expect(r.errors).toEqual([]);
+    expect(r.codeStatsPending).toBe(0);
+    const row = await pg.query<{ lines_of_code: number | null }>("select lines_of_code from repos where id = 1");
+    expect(row.rows[0].lines_of_code).toBeNull();
   });
 });

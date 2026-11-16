@@ -1,12 +1,21 @@
 import { and, asc, desc, eq, gte, inArray, lt, sql } from "drizzle-orm";
 import { getDb, schema } from "./db";
-import { bucket, cumulativeByDay, fillDaily, joinSeries, pivotReferrers } from "./transform";
+import {
+  aggregateLanguages,
+  bucket,
+  cumulativeByDay,
+  fillDaily,
+  joinSeries,
+  likelyAutomated,
+  pivotReferrers,
+} from "./transform";
 import { daysAgo, isoDay } from "./utils";
 
 const {
   alerts,
   annotations,
   repos,
+  repoLanguages,
   repoSnapshots,
   trafficDaily,
   trafficWindows,
@@ -61,7 +70,7 @@ export async function getOverview(rangeDays: number) {
   const db = getDb();
   const { since, until, prevSince } = await windowFor(rangeDays);
 
-  const [allRepos, traffic, perRepoDaily, daily, prev, latestSnaps, starsGained, forksGained, lastRun] =
+  const [allRepos, traffic, perRepoDaily, daily, prev, latestSnaps, starsGained, forksGained, lastRun, langRows] =
     await Promise.all([
       db.select().from(repos),
       db.select({ repoId: trafficDaily.repoId, ...trafficSums }).from(trafficDaily).where(gte(trafficDaily.date, since)).groupBy(trafficDaily.repoId),
@@ -94,6 +103,7 @@ export async function getOverview(rangeDays: number) {
         .where(gte(forkEvents.createdAt, new Date(since + "T00:00:00Z")))
         .groupBy(forkEvents.repoId),
       db.select().from(syncRuns).orderBy(desc(syncRuns.startedAt)).limit(1),
+      db.select().from(repoLanguages),
     ]);
 
   const trafficBy = new Map(traffic.map((t) => [t.repoId, t]));
@@ -120,8 +130,24 @@ export async function getOverview(rangeDays: number) {
       forks: s?.forks ?? 0,
       forksDelta: forksBy.get(r.id) ?? 0,
       spark: bucket(fillDaily(dailyBy.get(r.id) ?? [], "views", since, until), 60),
+      likelyAutomated: likelyAutomated({ views: t?.views ?? 0, clones: t?.clones ?? 0 }),
     };
   });
+
+  // Code totals cover your own work: forks are left out (their code is mostly someone else's).
+  const ownIds = new Set(allRepos.filter((r) => !r.isFork).map((r) => r.id));
+  const ownRepos = rows.filter((r) => ownIds.has(r.id));
+  const withLines = ownRepos.filter((r) => r.linesOfCode !== null);
+  const code = {
+    languages: aggregateLanguages(langRows.filter((l) => ownIds.has(l.repoId))),
+    linesOfCode: withLines.reduce((a, r) => a + (r.linesOfCode ?? 0), 0),
+    reposWithLines: withLines.length,
+    reposCounted: ownRepos.length,
+    largest: [...withLines]
+      .sort((a, b) => (b.linesOfCode ?? 0) - (a.linesOfCode ?? 0))
+      .slice(0, 8)
+      .map((r) => ({ fullName: r.fullName, name: r.name, linesOfCode: r.linesOfCode ?? 0, language: r.language })),
+  };
 
   const topReferrers = await db
     .select({
@@ -195,6 +221,9 @@ export async function getOverview(rangeDays: number) {
     window14: windows.length ? window14 : null,
     lastRun: lastRun[0] ?? null,
     previous: prevSince ? prev[0] ?? ZERO : null,
+    code,
+    /** Clones in repos whose clone/view pattern looks automated (CI, mirrors, deploys) — a heuristic */
+    automatedClones: rows.filter((r) => r.likelyAutomated).reduce((a, r) => a + r.clones, 0),
     totals: {
       views: sum("views"),
       viewUniques: sum("viewUniques"),
@@ -217,7 +246,7 @@ export async function getRepoDetail(owner: string, name: string, rangeDays: numb
   const latestFor = (table: typeof referrers | typeof popularPaths | typeof releaseAssets) =>
     sql`${table.date} = (select max(date) from ${table} where repo_id = ${repo.id})`;
 
-  const [daily, prev, latestSnap, refs, paths, assets, downloadsByDay, stars, forks, windows, refHistory, notes, repoAlerts] = await Promise.all([
+  const [daily, prev, latestSnap, refs, paths, assets, downloadsByDay, stars, forks, windows, refHistory, notes, repoAlerts, langs] = await Promise.all([
     db
       .select()
       .from(trafficDaily)
@@ -260,6 +289,11 @@ export async function getRepoDetail(owner: string, name: string, rangeDays: numb
       .where(and(eq(referrers.repoId, repo.id), gte(referrers.date, since))),
     db.select().from(annotations).where(eq(annotations.repoId, repo.id)).orderBy(desc(annotations.date), desc(annotations.id)),
     db.select().from(alerts).where(eq(alerts.repoId, repo.id)).orderBy(desc(alerts.date), desc(alerts.id)).limit(20),
+    db
+      .select({ language: repoLanguages.language, bytes: repoLanguages.bytes })
+      .from(repoLanguages)
+      .where(eq(repoLanguages.repoId, repo.id))
+      .orderBy(desc(repoLanguages.bytes)),
   ]);
 
   // Trend for the referrers that matter most right now (top 5 in the latest window)
@@ -292,6 +326,9 @@ export async function getRepoDetail(owner: string, name: string, rangeDays: numb
     daily,
     totals,
     previous: prevSince ? prev[0] ?? ZERO : null,
+    likelyAutomated: likelyAutomated(totals),
+    /** Stored by the sync; empty until the first sync that computes code stats */
+    languages: langs,
     window14: windows[0] ?? null,
     referrerTrend,
     notes,
@@ -340,6 +377,8 @@ export async function getExportData(kind: "repos" | "daily", rangeDays: number) 
       private: r.isPrivate,
       fork: r.isFork,
       language: r.language,
+      lines_of_code: r.linesOfCode,
+      likely_automated_clones: r.likelyAutomated,
       pushed_at: r.pushedAt,
       since: o.since,
     }));

@@ -10,13 +10,23 @@ A self-hosted Next.js dashboard for **views, unique visitors, clones, referrers,
 
 | | |
 |---|---|
-| **Overview** | Totals with % change vs the previous period, daily traffic chart, sortable/filterable repo table with sparklines, top referrers with trends, recent alerts, CSV export |
-| **Repo detail** | Views & clones (total vs unique), full star & fork history, recent stargazers and forks, referrer trend, popular content, languages, weekly commits, release downloads |
+| **Overview** | Totals with % change vs the previous period, language and lines-of-code totals, a 🤖 hint on clones that look automated, daily traffic chart, sortable/filterable repo table with sparklines, top referrers with trends, recent alerts, CSV export |
+| **Repo detail** | Views & clones (total vs unique), full star & fork history, recent stargazers and forks, referrer trend, popular content, languages and approximate lines of code, likely-automated clone hint, weekly commits, release downloads |
+| **Code** | Languages across all your repos (share of bytes, repos per language) and approximate lines of code per repo and in total, refreshed when a repo is pushed. Forks are left out of the totals |
 | **History** | Traffic is stored daily, so it outlives GitHub's 14-day limit. Star and fork history is rebuilt from GitHub's timestamps, back to the day each repo was created |
 | **Alerts** | Traffic spikes, star bursts and star milestones, shown in the app and optionally posted to Slack or Discord |
 | **Notes** | Pin notes like "Posted on Hacker News" to a date; they show as markers on the charts |
 | **Badges** | `views/month`, `visitors`, `clones`, `stars`, `forks` SVG badges for your READMEs (public repos only) |
 | **Ranges** | 7 / 14 / 30 / 90 / 365 days / all time |
+
+### Code across your repos
+
+<table>
+<tr>
+<td width="50%"><b>Languages</b> — share of code by bytes, and how many repos use each<br><img src="docs/languages.png" alt="Languages across all repos"></td>
+<td width="50%"><b>Lines of code</b> — approximate total and largest repos<br><img src="docs/lines-of-code.png" alt="Lines of code"></td>
+</tr>
+</table>
 
 ### Repo detail
 
@@ -41,7 +51,8 @@ See [PLAN.md](./PLAN.md) for the architecture, data model and roadmap.
 
 ## Setup
 
-1. **Token**: create a [fine-grained PAT](https://github.com/settings/personal-access-tokens/new) with *All repositories*, **Administration: Read-only** and **Metadata: Read-only** (or a classic token with `repo`).
+1. **Token**: create a [fine-grained PAT](https://github.com/settings/personal-access-tokens/new) with *All repositories*, **Administration: Read-only**, **Contents: Read-only** (release download counts) and **Metadata: Read-only** (or a classic token with `repo`).
+   GitHub is restricting the stargazers list to repo admins and collaborators; when it refuses a repo (403), the sync skips that repo's star *history* and says so. Star counts still update.
 2. **Database**: create a Postgres database. [Neon](https://neon.tech)'s free tier works well; Railway, Supabase or a local Docker container work too.
 3. **Configure and run**
    ```bash
@@ -94,6 +105,12 @@ Use the form on a repo page to pin a note to a date, such as a launch, a blog po
 | `?metric=stars` (also `clones`, `forks`) | ![stars](docs/badge-stars.svg) |
 
 Use `&label=…` to change the left-hand text. Badges skip `DASHBOARD_PASSWORD` so GitHub can load them. They only work for **public** repos (private or unknown repos return 404), and are cached for an hour. Set `BADGES_ENABLED=false` to turn them off.
+
+## About lines of code and automated clones
+
+GitHub has no "lines of code" number. The sync sums GitHub's weekly additions minus deletions over the repo's whole history (`stats/code_frequency`), so it counts every file, including lockfiles and generated code. Treat it as a rough size. GitHub computes these stats on demand: a repo it is still working on is retried a few seconds later and otherwise filled in by the next sync, and repos with 10,000+ commits get no count. Languages come from GitHub's Linguist byte counts, which already skip vendored and generated files.
+
+GitHub doesn't say who viewed or cloned a repo, so there is no way to separate people from bots. The 🤖 hint is a heuristic: a repo with at least 10 clones and more than twice as many clones as views in the selected range is flagged, because CI runs, mirrors and deploy hosts (Vercel and Netlify clone on every build) clone without ever opening the page.
 
 ## About "unique" numbers
 

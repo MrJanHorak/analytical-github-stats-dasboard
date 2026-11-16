@@ -1,12 +1,21 @@
 import { eq, sql } from "drizzle-orm";
 import { evaluateAlerts, notifyAlerts } from "./alerts";
 import { getDb, schema } from "./db";
-import { fetchForks, fetchReleases, fetchStargazers, fetchTraffic, listOwnedRepos } from "./github";
-import { mergeTraffic } from "./transform";
+import {
+  fetchCodeFrequency,
+  fetchForks,
+  fetchLanguages,
+  fetchReleases,
+  fetchStargazers,
+  fetchTraffic,
+  listOwnedRepos,
+} from "./github";
+import { mergeTraffic, netLines } from "./transform";
 import { isoDay, mapLimit } from "./utils";
 
 const {
   repos,
+  repoLanguages,
   repoSnapshots,
   trafficDaily,
   trafficWindows,
@@ -20,14 +29,22 @@ const {
 
 const excluded = (col: string) => sql.raw(`excluded.${col}`);
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
+const isForbidden = (e: unknown) => (e as { status?: unknown } | null)?.status === 403;
 
 export type SyncResult = {
   /** Repos whose traffic/releases were collected this run */
   reposSynced: number;
   /** Star/fork history refreshes left for the next run because the time budget ran out */
   historyPending: number;
+  /** Repos whose languages / lines of code still need (re)computing next run (time budget, or GitHub still computing) */
+  codeStatsPending: number;
   /** New alerts recorded this run (spikes, star bursts, milestones) */
   alertsCreated: number;
+  /**
+   * Repos whose stargazer list GitHub refused (403) — it is restricting that endpoint to
+   * admins/collaborators. Star counts still update; only the star-history backfill is skipped.
+   */
+  starHistoryUnavailable: string[];
   errors: { repo: string; error: string }[];
 };
 
@@ -38,6 +55,8 @@ export type SyncOptions = {
    * Leftover history work is picked up automatically on the next run.
    */
   timeBudgetMs?: number;
+  /** Wait before retrying repos whose line stats GitHub was still computing (default 5s). */
+  codeStatsRetryMs?: number;
 };
 
 type OwnedRepo = Awaited<ReturnType<typeof listOwnedRepos>>[number];
@@ -53,10 +72,16 @@ export async function runSync(opts: SyncOptions = {}): Promise<SyncResult> {
   const errors: SyncResult["errors"] = [];
   let reposSynced = 0;
   let historyPending = 0;
+  const starHistoryUnavailable: string[] = [];
+  let codeStatsPending = 0;
 
   try {
     const owned = await listOwnedRepos();
-    const [starCounts, forkCounts] = await Promise.all([countBy(starEvents), countBy(forkEvents)]);
+    const [starCounts, forkCounts, codeStatsFor] = await Promise.all([
+      countBy(starEvents),
+      countBy(forkEvents),
+      codeStatsMarkers(),
+    ]);
 
     for (const r of owned) await upsertRepoAndSnapshot(r, today);
 
@@ -95,9 +120,28 @@ export async function runSync(opts: SyncOptions = {}): Promise<SyncResult> {
         if (kind === "stars") await syncStars(r.id, r.owner.login, r.name);
         else await syncForks(r.id, r.owner.login, r.name);
       } catch (e) {
-        errors.push({ repo: `${r.full_name} (${kind})`, error: errMsg(e) });
+        if (kind === "stars" && isForbidden(e)) starHistoryUnavailable.push(r.full_name);
+        else errors.push({ repo: `${r.full_name} (${kind})`, error: errMsg(e) });
       }
     });
+
+    // Phase 3 — languages + approximate lines of code: only for repos pushed since they were last computed.
+    let codeJobs = owned.filter((r) => r.pushed_at && codeStatsFor.get(r.id) !== new Date(r.pushed_at).getTime());
+    for (let attempt = 0; attempt < 2 && codeJobs.length && !outOfTime(); attempt++) {
+      // GitHub computes code_frequency on demand (202); give it a moment, then retry those once.
+      if (attempt) await new Promise((res) => setTimeout(res, opts.codeStatsRetryMs ?? 5000));
+      const notReady: OwnedRepo[] = [];
+      await mapLimit(codeJobs, 4, async (r) => {
+        if (outOfTime()) return void notReady.push(r);
+        try {
+          if (!(await syncCodeStats(r))) notReady.push(r);
+        } catch (e) {
+          errors.push({ repo: `${r.full_name} (code stats)`, error: errMsg(e) });
+        }
+      });
+      codeJobs = notReady;
+    }
+    codeStatsPending = codeJobs.length;
   } catch (e) {
     errors.push({ repo: "*", error: errMsg(e) });
   }
@@ -120,7 +164,47 @@ export async function runSync(opts: SyncOptions = {}): Promise<SyncResult> {
     })
     .where(eq(syncRuns.id, run.id));
 
-  return { reposSynced, historyPending, alertsCreated, errors };
+  return { reposSynced, historyPending, codeStatsPending, alertsCreated, starHistoryUnavailable, errors };
+}
+
+/** repo id → pushed_at (ms) that languages/lines were last computed for */
+async function codeStatsMarkers() {
+  const rows = await getDb()
+    .select({ id: repos.id, at: repos.codeStatsPushedAt })
+    .from(repos)
+    .where(sql`${repos.codeStatsPushedAt} is not null`);
+  return new Map(rows.map((r) => [r.id, r.at!.getTime()]));
+}
+
+/**
+ * Store languages and approximate lines of code. Returns false when GitHub is still computing
+ * the line stats (try again later); the repo is then not marked as done.
+ */
+async function syncCodeStats(r: OwnedRepo): Promise<boolean> {
+  const db = getDb();
+  const owner = r.owner.login;
+  const [languages, weeks] = await Promise.all([
+    fetchLanguages(owner, r.name),
+    fetchCodeFrequency(owner, r.name).catch((e) => {
+      // 422: too many commits (10k+) for GitHub to compute — lines stay unknown, everything else works.
+      if ((e as { status?: unknown } | null)?.status === 422) return "too-big" as const;
+      throw e;
+    }),
+  ]);
+
+  await db.delete(repoLanguages).where(eq(repoLanguages.repoId, r.id));
+  const langRows = Object.entries(languages ?? {}).map(([language, bytes]) => ({ repoId: r.id, language, bytes }));
+  if (langRows.length) await db.insert(repoLanguages).values(langRows).onConflictDoNothing();
+
+  if (weeks === null) return false;
+  await db
+    .update(repos)
+    .set({
+      linesOfCode: weeks === "too-big" ? null : netLines(weeks),
+      codeStatsPushedAt: new Date(r.pushed_at!),
+    })
+    .where(eq(repos.id, r.id));
+  return true;
 }
 
 async function countBy(table: typeof starEvents | typeof forkEvents) {

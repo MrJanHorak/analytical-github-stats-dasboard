@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { compact, renderBadge } from "@/lib/badge";
 import {
+  aggregateLanguages,
   bucket,
   crossedMilestones,
   cumulativeByDay,
@@ -8,10 +9,13 @@ import {
   detectSpike,
   fillDaily,
   joinSeries,
+  likelyAutomated,
   mergeTraffic,
+  netLines,
   pctChange,
   pivotReferrers,
   toCsv,
+  topWithOther,
 } from "@/lib/transform";
 import { parseRange, rangeParam } from "@/lib/utils";
 
@@ -169,5 +173,47 @@ describe("misc", () => {
     expect(parseRange("90")).toBe(90);
     expect(parseRange("13")).toBe(30);
     expect(rangeParam(0)).toBe("all");
+  });
+});
+
+describe("netLines", () => {
+  it("sums additions and (negative) deletions, never below zero", () => {
+    expect(netLines([[0, 100, -20], [1, 5, -50]])).toBe(35);
+    expect(netLines([])).toBe(0);
+    expect(netLines([[0, 10, -40]])).toBe(0);
+  });
+});
+
+describe("aggregateLanguages / topWithOther", () => {
+  const rows = [
+    { repoId: 1, language: "TypeScript", bytes: 900 },
+    { repoId: 2, language: "TypeScript", bytes: 100 },
+    { repoId: 2, language: "CSS", bytes: 300 },
+    { repoId: 3, language: "Shell", bytes: 50 },
+  ];
+
+  it("totals bytes and counts repos per language, largest first", () => {
+    expect(aggregateLanguages(rows)).toEqual([
+      { language: "TypeScript", bytes: 1000, repos: 2 },
+      { language: "CSS", bytes: 300, repos: 1 },
+      { language: "Shell", bytes: 50, repos: 1 },
+    ]);
+  });
+
+  it("folds the tail into Other", () => {
+    const all = aggregateLanguages(rows);
+    expect(topWithOther(all, 1)).toEqual([all[0], { language: "Other", bytes: 350 }]);
+    expect(topWithOther(all, 5)).toEqual(all);
+  });
+});
+
+describe("likelyAutomated", () => {
+  it("flags many clones with few views", () => {
+    expect(likelyAutomated({ views: 3, clones: 40 })).toBe(true);
+  });
+  it("ignores small numbers and normal clone/view ratios", () => {
+    expect(likelyAutomated({ views: 0, clones: 5 })).toBe(false);
+    expect(likelyAutomated({ views: 200, clones: 40 })).toBe(false);
+    expect(likelyAutomated({ views: 10, clones: 20 })).toBe(false);
   });
 });

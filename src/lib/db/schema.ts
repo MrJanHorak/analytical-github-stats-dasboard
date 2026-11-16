@@ -29,7 +29,22 @@ export const repos = pgTable("repos", {
   createdAt: timestamp("created_at", { withTimezone: true }),
   pushedAt: timestamp("pushed_at", { withTimezone: true }),
   syncedAt: timestamp("synced_at", { withTimezone: true }),
+  /** Approximate lines of code: net lines added across all commits (GitHub code_frequency). Null = unknown. */
+  linesOfCode: integer("lines_of_code"),
+  /** The pushed_at that languages + lines were last computed for; refetched when the repo is pushed again. */
+  codeStatsPushedAt: timestamp("code_stats_pushed_at", { withTimezone: true }),
 });
+
+/** Bytes per language (GitHub Linguist — skips vendored and generated files). Current state, replaced on refresh. */
+export const repoLanguages = pgTable(
+  "repo_languages",
+  {
+    repoId: repoId(),
+    language: text("language").notNull(),
+    bytes: bigint("bytes", { mode: "number" }).notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.repoId, t.language] })],
+);
 
 export const repoSnapshots = pgTable(
   "repo_snapshots",

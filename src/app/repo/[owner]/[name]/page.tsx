@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { TimeSeriesChart } from "@/components/charts";
 import { RangePicker } from "@/components/RangePicker";
 import { SetupNotice } from "@/components/SetupNotice";
+import { LanguageBars } from "@/components/LanguageBars";
 import { StatCard } from "@/components/StatCard";
 import { isDbConfigured } from "@/lib/db";
 import { addNote, deleteNote } from "./actions";
@@ -27,8 +28,14 @@ export default async function RepoPage({ params, searchParams }: Props) {
   if (!data) notFound();
 
   // Live (not stored) extras, cached; failures shouldn't break the page.
-  const [languages, commits] = await Promise.all([getLanguages(owner, name), getCommitActivity(owner, name)]);
-  const langTotal = Object.values(languages).reduce((a, b) => a + b, 0);
+  // Languages are stored by the sync; until it has run for this repo, fall back to a live fetch.
+  const [liveLanguages, commits] = await Promise.all([
+    data.languages.length ? Promise.resolve(null) : getLanguages(owner, name),
+    getCommitActivity(owner, name),
+  ]);
+  const languages = liveLanguages
+    ? Object.entries(liveLanguages).map(([language, bytes]) => ({ language, bytes }))
+    : data.languages;
   const commitWeeks = commits.map((w) => ({ date: new Date(w.week * 1000).toISOString().slice(0, 10), commits: w.total }));
 
   const { repo, totals, previous } = data;
@@ -71,6 +78,14 @@ export default async function RepoPage({ params, searchParams }: Props) {
         <StatCard label="Stars" value={data.current.stars} delta={data.starsGained} sub={rt} />
         <StatCard label="Forks" value={data.current.forks} delta={data.forksGained} sub={rt} />
       </div>
+
+      {data.likelyAutomated && (
+        <p className="rounded-xl border border-zinc-800 bg-zinc-900/50 px-4 py-3 text-sm text-zinc-300">
+          🤖 <span className="font-medium">Clones look mostly automated:</span> {fmt(totals.clones)} clones vs {fmt(totals.views)}{" "}
+          views ({rt}). That pattern usually means CI runs, mirrors or deploy hosts (Vercel and Netlify clone on every
+          build) rather than people. It&apos;s a guess: GitHub doesn&apos;t report who cloned.
+        </p>
+      )}
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <section className="min-w-0 rounded-xl border border-zinc-800 p-4">
@@ -190,23 +205,18 @@ export default async function RepoPage({ params, searchParams }: Props) {
           headers={["Path", "Views", "Unique"]}
         />
         <section className="min-w-0 rounded-xl border border-zinc-800 p-4">
-          <h2 className="mb-3 text-sm font-medium text-zinc-400">Languages</h2>
-          {langTotal ? (
-            <ul className="space-y-2 text-sm">
-              {Object.entries(languages).map(([lang, bytes]) => (
-                <li key={lang}>
-                  <div className="flex justify-between">
-                    <span>{lang}</span>
-                    <span className="text-zinc-400">{((bytes / langTotal) * 100).toFixed(1)}%</span>
-                  </div>
-                  <div className="mt-1 h-1.5 rounded bg-zinc-800">
-                    <div className="h-1.5 rounded bg-accent" style={{ width: `${(bytes / langTotal) * 100}%` }} />
-                  </div>
-                </li>
-              ))}
-            </ul>
+          <h2 className="text-sm font-medium text-zinc-400">Code</h2>
+          <p className="mb-3 text-xs text-zinc-500" title="Lines added minus deleted over all commits (GitHub code_frequency); includes lockfiles and generated files">
+            {repo.linesOfCode !== null
+              ? `≈ ${fmt(repo.linesOfCode)} lines (approximate)`
+              : repo.codeStatsPushedAt
+                ? "Line count unavailable (GitHub can't compute it for repos with 10,000+ commits)"
+                : "Line count appears after the next sync"}
+          </p>
+          {languages.length ? (
+            <LanguageBars items={languages} />
           ) : (
-            <p className="text-sm text-zinc-500">No language data (fetched live — needs GITHUB_TOKEN).</p>
+            <p className="text-sm text-zinc-500">No language data yet.</p>
           )}
         </section>
       </div>

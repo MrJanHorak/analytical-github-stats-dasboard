@@ -6,7 +6,7 @@ import type { RepoRow } from "@/lib/queries";
 import { fmt, rangeParam } from "@/lib/utils";
 import { Sparkline } from "./Sparkline";
 
-type Key = "fullName" | "views" | "viewUniques" | "clones" | "cloneUniques" | "stars" | "forks" | "pushedAt";
+type Key = "fullName" | "views" | "viewUniques" | "clones" | "cloneUniques" | "stars" | "forks" | "linesOfCode" | "pushedAt";
 
 const cols: { key: Key; label: string; numeric?: boolean }[] = [
   { key: "fullName", label: "Repository" },
@@ -17,6 +17,7 @@ const cols: { key: Key; label: string; numeric?: boolean }[] = [
   { key: "cloneUniques", label: "Cloners", numeric: true },
   { key: "stars", label: "Stars", numeric: true },
   { key: "forks", label: "Forks", numeric: true },
+  { key: "linesOfCode", label: "Lines", numeric: true },
   { key: "pushedAt", label: "Last push" },
 ];
 
@@ -82,7 +83,17 @@ export function RepoTable({ repos, range }: { repos: RepoRow[]; range: number })
                 </td>
                 <td className="px-3 py-2 text-right tabular-nums">{fmt(r.views)}</td>
                 <td className="px-3 py-2 text-right tabular-nums text-zinc-400">{fmt(r.viewUniques)}</td>
-                <td className="px-3 py-2 text-right tabular-nums">{fmt(r.clones)}</td>
+                <td className="px-3 py-2 text-right tabular-nums">
+                  {r.likelyAutomated && (
+                    <span
+                      className="mr-1 cursor-help text-xs"
+                      title="Many clones but few views — most likely CI, mirrors or deploys rather than people (a guess: GitHub doesn't say who cloned)"
+                    >
+                      🤖
+                    </span>
+                  )}
+                  {fmt(r.clones)}
+                </td>
                 <td className="px-3 py-2 text-right tabular-nums text-zinc-400">{fmt(r.cloneUniques)}</td>
                 <td className="px-3 py-2 text-right tabular-nums">
                   {fmt(r.stars)}
@@ -91,6 +102,9 @@ export function RepoTable({ repos, range }: { repos: RepoRow[]; range: number })
                 <td className="px-3 py-2 text-right tabular-nums">
                   {fmt(r.forks)}
                   {r.forksDelta > 0 && <span className="ml-1 text-xs text-emerald-400">+{r.forksDelta}</span>}
+                </td>
+                <td className="px-3 py-2 text-right tabular-nums text-zinc-400">
+                  {r.linesOfCode === null ? "—" : fmt(r.linesOfCode)}
                 </td>
                 <td className="px-3 py-2 text-xs text-zinc-500">
                   {r.pushedAt ? new Date(r.pushedAt).toLocaleDateString() : "—"}

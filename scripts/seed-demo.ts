@@ -2,11 +2,11 @@
 //   npm run seed:demo        (uses DATABASE_URL; run `npm run db:push` or `npm run db:migrate` first)
 // Re-running replaces previous demo data (repo ids 900001+).
 import "dotenv/config";
-import { inArray } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { getDb, schema } from "../src/lib/db";
 import { daysAgo, isoDay } from "../src/lib/utils";
 
-const { alerts, annotations, repos, repoSnapshots, trafficDaily, trafficWindows, referrers, popularPaths, releaseAssets, starEvents, forkEvents, syncRuns } =
+const { alerts, annotations, repos, repoLanguages, repoSnapshots, trafficDaily, trafficWindows, referrers, popularPaths, releaseAssets, starEvents, forkEvents, syncRuns } =
   schema;
 
 // Deterministic PRNG so screenshots are stable
@@ -22,13 +22,22 @@ const DEMO = [
   { name: "fire-pit-tool", lang: "TypeScript", popularity: 6, created: "2025-02-01" },
   { name: "dotfiles", lang: "Shell", popularity: 2, created: "2021-09-30" },
 ];
+// Bytes per language and approximate lines, per demo repo (same order as DEMO)
+const CODE: { languages: Record<string, number>; lines: number }[] = [
+  { languages: { TypeScript: 412000, CSS: 38000, HTML: 4100 }, lines: 14800 },
+  { languages: { TypeScript: 268000, CSS: 21000, JavaScript: 9000 }, lines: 9200 },
+  { languages: { TypeScript: 151000, Python: 22000, CSS: 12000 }, lines: 6100 },
+  { languages: { JavaScript: 54000, CSS: 14000, HTML: 6000 }, lines: 2300 },
+  { languages: { TypeScript: 96000, CSS: 8000 }, lines: 3400 },
+  { languages: { Shell: 18000, Lua: 4000 }, lines: 900 },
+];
 const REFERRERS = ["github.com", "google.com", "news.ycombinator.com", "reddit.com", "t.co", "dev.to", "linkedin.com"];
 const DAYS = 120;
 
 async function main() {
   const db = getDb();
   const ids = DEMO.map((_, i) => 900001 + i);
-  for (const t of [alerts, annotations, trafficDaily, trafficWindows, repoSnapshots, referrers, popularPaths, releaseAssets, starEvents, forkEvents]) {
+  for (const t of [alerts, annotations, repoLanguages, trafficDaily, trafficWindows, repoSnapshots, referrers, popularPaths, releaseAssets, starEvents, forkEvents]) {
     await db.delete(t).where(inArray(t.repoId, ids));
   }
   await db.delete(repos).where(inArray(repos.id, ids));
@@ -152,6 +161,16 @@ async function main() {
       }
     }
   }
+
+  // Languages + lines of code; dotfiles gets cloned by "CI" every day so it shows the likely-automated hint
+  for (const [i, c] of CODE.entries()) {
+    await db.insert(repoLanguages).values(Object.entries(c.languages).map(([language, bytes]) => ({ repoId: ids[i], language, bytes })));
+    await db.update(repos).set({ linesOfCode: c.lines, codeStatsPushedAt: new Date() }).where(eq(repos.id, ids[i]));
+  }
+  await db
+    .update(trafficDaily)
+    .set({ clones: sql`4 + (extract(doy from ${trafficDaily.date})::int % 3)`, cloneUniques: 1 })
+    .where(eq(trafficDaily.repoId, ids[5]));
 
   // Notes and alerts so the timeline, chart markers and alerts panel have something to show
   const top = ids[0];

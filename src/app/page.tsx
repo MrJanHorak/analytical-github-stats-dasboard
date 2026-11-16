@@ -5,8 +5,10 @@ import { RepoTable } from "@/components/RepoTable";
 import { SetupNotice } from "@/components/SetupNotice";
 import { Sparkline } from "@/components/Sparkline";
 import { StatCard } from "@/components/StatCard";
+import { LanguageBars } from "@/components/LanguageBars";
 import { isDbConfigured } from "@/lib/db";
 import { getOverview } from "@/lib/queries";
+import { topWithOther } from "@/lib/transform";
 import { fmt, parseRange, rangeParam, rangeText } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
@@ -16,7 +18,7 @@ export default async function Overview({ searchParams }: { searchParams: Promise
   const range = parseRange((await searchParams).range);
   const data = await getOverview(range);
   if (!data.repos.length) return <SetupNotice />;
-  const { totals, previous } = data;
+  const { totals, previous, code } = data;
   const rt = rangeText(range);
 
   return (
@@ -44,7 +46,13 @@ export default async function Overview({ searchParams }: { searchParams: Promise
           sub="Σ daily uniques"
           note={data.window14 ? `${fmt(data.window14.viewUniques)} distinct · last 14d` : undefined}
         />
-        <StatCard label="Clones" value={totals.clones} previous={previous?.clones} sub={rt} />
+        <StatCard
+          label="Clones"
+          value={totals.clones}
+          previous={previous?.clones}
+          sub={rt}
+          note={data.automatedClones ? `🤖 ${fmt(data.automatedClones)} likely automated` : undefined}
+        />
         <StatCard
           label="Unique cloners"
           value={totals.cloneUniques}
@@ -103,6 +111,43 @@ export default async function Overview({ searchParams }: { searchParams: Promise
           </ul>
         </section>
       )}
+
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <section className="min-w-0 rounded-xl border border-zinc-800 p-4">
+          <h2 className="text-sm font-medium text-zinc-400">Languages across your repos</h2>
+          <p className="mb-3 text-xs text-zinc-500">Share of code by bytes (GitHub Linguist) · forks excluded</p>
+          {code.languages.length ? (
+            <LanguageBars items={topWithOther(code.languages, 10)} />
+          ) : (
+            <p className="text-sm text-zinc-500">Language totals appear after the next sync.</p>
+          )}
+        </section>
+        <section className="min-w-0 rounded-xl border border-zinc-800 p-4">
+          <h2 className="text-sm font-medium text-zinc-400">Lines of code</h2>
+          {code.reposWithLines ? (
+            <>
+              <div className="mt-1 text-2xl font-semibold tabular-nums">≈ {fmt(code.linesOfCode)}</div>
+              <p className="mb-3 text-xs text-zinc-500">
+                across {code.reposWithLines} of {code.reposCounted} repos · forks excluded · approximate: lines added minus
+                deleted over all commits, so lockfiles and other generated files count too
+              </p>
+              <ul className="space-y-1.5 text-sm">
+                {code.largest.map((r) => (
+                  <li key={r.fullName} className="flex items-center gap-2">
+                    <Link href={`/repo/${r.fullName}?range=${rangeParam(range)}`} className="min-w-0 flex-1 truncate hover:text-accent">
+                      {r.name}
+                    </Link>
+                    {r.language && <span className="text-xs text-zinc-500">{r.language}</span>}
+                    <span className="w-16 text-right tabular-nums text-zinc-400">{fmt(r.linesOfCode)}</span>
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : (
+            <p className="mt-2 text-sm text-zinc-500">Line counts appear after the next sync.</p>
+          )}
+        </section>
+      </div>
 
       <RepoTable repos={data.repos} range={range} />
     </div>
