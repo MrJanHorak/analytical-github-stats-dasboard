@@ -44,9 +44,9 @@ Not available from GitHub: visitor geography, devices, user agents (so no way to
 
 ## 4. Auth (v1: single user)
 
-- A **fine-grained personal access token** in `GITHUB_TOKEN`, scoped to *All repositories* with **Administration: Read-only** (required for traffic), **Contents: Read-only** (required for release download counts) and **Metadata: Read-only**. A classic token with `repo` scope also works.
+- A **fine-grained personal access token** in `GITHUB_TOKEN`, scoped to *All repositories* with **Administration: Read-only** (required for traffic), **Contents: Read-only** (release download counts and line counting) and **Metadata: Read-only**. A classic token with `repo` scope also works.
 - Dashboard, CSV export and note-editing server actions are protected by `DASHBOARD_PASSWORD` (HTTP basic auth middleware). Exceptions: `/api/cron/*` (own bearer secret) and `/api/badge/*` (public by design, public repos only).
-- **v2:** Auth.js GitHub OAuth / a GitHub App so multiple users can sign in and track their own repos (tables already carry `owner`).
+- **v2 (M4b):** a GitHub App + Auth.js sign-in so multiple users can track their own repos (tables already carry `owner`) — see the roadmap.
 
 ## 5. Data model
 

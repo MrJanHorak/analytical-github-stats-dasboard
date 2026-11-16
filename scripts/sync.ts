@@ -9,7 +9,7 @@ runSync()
   .then((r) => {
     console.log(`Synced traffic for ${r.reposSynced} repos in ${((Date.now() - started) / 1000).toFixed(1)}s`);
     if (r.codeStatsPending)
-      console.log(`Lines of code still being computed by GitHub for ${r.codeStatsPending} repo(s) — the next sync fills them in.`);
+      console.log(`Lines of code not counted yet for ${r.codeStatsPending} repo(s) — the next sync picks them up.`);
     if (r.starHistoryUnavailable.length)
       console.log(
         `Star history not available from GitHub for ${r.starHistoryUnavailable.length} repo(s) (star counts still update): ${r.starHistoryUnavailable.join(", ")}`,
