@@ -47,7 +47,7 @@ export async function syncRepoActivity(r: ActivityRepo, prev: Marker | undefined
   // Issues & PRs updated since the last sync (everything on the first one)
   const issuesSince = prev?.issuesSyncedAt ? new Date(prev.issuesSyncedAt.getTime() - ISSUES_OVERLAP_MS) : null;
   const items = await fetchIssues(owner, r.name, issuesSince, r.has_issues ?? true);
-  await upsertIssues(r.id, items);
+  if (items) await upsertIssues(r.id, items);
 
   // Actions runs
   const runsSince = prev?.runsSyncedAt
@@ -71,7 +71,8 @@ export async function syncRepoActivity(r: ActivityRepo, prev: Marker | undefined
     dependabotMedium: dependabot?.medium ?? null,
     dependabotLow: dependabot?.low ?? null,
     actionsAvailable: runs !== null,
-    issuesSyncedAt: now,
+    issuesAvailable: items !== null,
+    issuesSyncedAt: items ? now : (prev?.issuesSyncedAt ?? null),
     runsSyncedAt: runs ? now : (prev?.runsSyncedAt ?? null),
     activitySyncedAt: now,
     ...(health !== undefined
@@ -95,7 +96,7 @@ export async function syncRepoActivity(r: ActivityRepo, prev: Marker | undefined
   );
   await db.insert(repoHealth).values(row).onConflictDoUpdate({ target: repoHealth.repoId, set });
 
-  return { issues: items.length, runs: runs?.length ?? null, healthChecked: healthDue };
+  return { issues: items?.length ?? null, runs: runs?.length ?? null, healthChecked: healthDue };
 }
 
 const snake = (k: string) => k.replace(/[A-Z]/g, (c) => "_" + c.toLowerCase());

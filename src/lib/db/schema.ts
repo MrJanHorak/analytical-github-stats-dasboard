@@ -334,6 +334,8 @@ export const repoHealth = pgTable("repo_health", {
   dependabotMedium: integer("dependabot_medium"),
   dependabotLow: integer("dependabot_low"),
   actionsAvailable: boolean("actions_available"),
+  /** false when the token can't read issues/PRs (private repos need Issues + Pull requests: Read-only) */
+  issuesAvailable: boolean("issues_available"),
   issuesSyncedAt: timestamp("issues_synced_at", { withTimezone: true }),
   runsSyncedAt: timestamp("runs_synced_at", { withTimezone: true }),
   activitySyncedAt: timestamp("activity_synced_at", { withTimezone: true }),

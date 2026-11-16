@@ -29,7 +29,7 @@ Run the collector at least every ~13 days; daily is recommended so you also get 
 | Lines added/deleted | `GET /repos/{o}/{r}/stats/code_frequency` | weekly, all history | shown monthly as the code-growth chart on repo detail (live, cached 6h); 202 while computing, 422 for 10k+ commits |
 | Your contributions | GraphQL `viewer.contributionsCollection(from, to)` | one calendar year per query | commits, PRs, issues, reviews, daily calendar, commits/PRs per repo |
 | You | `GET /user` | current | followers / following → daily snapshot |
-| Issues & PRs | `GET /repos/{o}/{r}/issues?state=all&since=…` | incremental | issues list includes PRs (`pull_request.merged_at`); repos with issues off fall back to `GET /pulls` |
+| Issues & PRs | `GET /repos/{o}/{r}/issues?state=all&since=…` | incremental | issues list includes PRs (`pull_request.merged_at`); repos with issues off fall back to `GET /pulls`; private repos need **Issues** + **Pull requests: Read-only** (403 → `issues_available = false`, panel explains) |
 | Actions runs | `GET /repos/{o}/{r}/actions/runs?created=>=…` | incremental | needs **Actions: Read-only**; 403 → panel explains |
 | Community profile | `GET /repos/{o}/{r}/community/profile` | current | public repos only; rechecked on push or weekly |
 | Dependabot alerts | `GET /repos/{o}/{r}/dependabot/alerts?state=open` | current | needs **Dependabot alerts: Read-only**; 403/404 → null |
@@ -50,7 +50,7 @@ Not available from GitHub: visitor geography, devices, user agents (so no way to
 
 ## 4. Auth (v1: single user)
 
-- A **fine-grained personal access token** in `GITHUB_TOKEN`, scoped to *All repositories* with **Administration: Read-only** (required for traffic), **Contents: Read-only** (release download counts and line counting) and **Metadata: Read-only**. Optional: **Actions: Read-only** (CI stats) and **Dependabot alerts: Read-only** (security alerts). A classic token with `repo` scope also works.
+- A **fine-grained personal access token** in `GITHUB_TOKEN`, scoped to *All repositories* with **Administration: Read-only** (required for traffic), **Contents: Read-only** (release download counts and line counting), **Issues** + **Pull requests: Read-only** (issue/PR stats for private repos) and **Metadata: Read-only**. Optional: **Actions: Read-only** (CI stats) and **Dependabot alerts: Read-only** (security alerts). A classic token with `repo` scope also works.
 - Dashboard, CSV export and note-editing server actions are protected by `DASHBOARD_PASSWORD` (HTTP basic auth middleware). Exceptions: `/api/cron/*` (own bearer secret) and `/api/badge/*` (public by design, public repos only).
 - **v2 (M4b):** a GitHub App + Auth.js sign-in so multiple users can track their own repos (tables already carry `owner`) — see the roadmap.
 
@@ -87,7 +87,7 @@ workflow_runs    (repo_id, run_id) PK — workflow, event, branch, status, concl
                  created_at, started_at, updated_at
 repo_health      (repo_id) PK — health_percentage, has_readme/license/code_of_conduct/contributing/
                  issue_template/pr_template/description, health_checked_at,
-                 dependabot_critical/high/medium/low (null = unavailable), actions_available,
+                 dependabot_critical/high/medium/low (null = unavailable), actions_available, issues_available,
                  issues_synced_at, runs_synced_at, activity_synced_at   [activity sync markers]
 ```
 
@@ -101,7 +101,7 @@ All writes are upserts, so re-running the sync is safe and the partial "today" r
 4. **History second**: refetch stargazers/forks only for repos whose count changed, smallest first, until `SYNC_TIME_BUDGET_MS` (cron default 45s; CLI unlimited). Leftovers resume next run.
 5. **Code stats**: for repos pushed since they were last checked, refresh languages; then, if the default branch has a new commit, stream its tarball and count lines (`src/lib/loc.ts`: non-blank lines in code files; lock files, vendored/build dirs, minified, binary, >1 MB and `.gitattributes` linguist-generated/vendored/documentation files left out). Two at a time, same time budget as history; leftovers and failures resume next run. Repos over 500 MB are skipped.
 6. **Your contributions** (right after traffic, `src/lib/sync-contributions.ts`): snapshot followers; fetch each calendar year that has never been stored or wasn't synced after it ended, newest first (first run = full backfill to account creation; afterwards just the current year). Same time budget.
-7. **Repo activity** (`src/lib/sync-activity.ts`, your own non-fork, non-archived repos, least recently synced first, same time budget): issues & PRs updated since the last sync (10-minute overlap; everything on the first run), Actions runs created since the last sync minus a day (so in-progress runs get their conclusion; 90 days on the first run), open Dependabot alerts, and the community profile when the repo was pushed or the last check is a week old. Missing Actions/Dependabot permissions are recorded (`actions_available`, null counts), not errors.
+7. **Repo activity** (`src/lib/sync-activity.ts`, your own non-fork, non-archived repos, least recently synced first, same time budget): issues & PRs updated since the last sync (10-minute overlap; everything on the first run), Actions runs created since the last sync minus a day (so in-progress runs get their conclusion; 90 days on the first run), open Dependabot alerts, and the community profile when the repo was pushed or the last check is a week old. Missing Issues/PRs, Actions or Dependabot permissions are recorded (`issues_available`, `actions_available`, null counts), not errors; the issues marker is kept so nothing is missed once access is granted.
 8. **Alerts**: judge yesterday against stored history → insert into `alerts` (idempotent) → post unnotified ones to `ALERT_WEBHOOK_URL`.
 9. Record a `sync_runs` row. About 5 requests per repo plus history refreshes, so 100 repos ≈ 500 requests, well under the 5,000/hour limit.
 

@@ -8,7 +8,13 @@ export function getOctokit() {
   if (!_octokit) {
     const auth = process.env.GITHUB_TOKEN;
     if (!auth) throw new Error("GITHUB_TOKEN is not set");
-    _octokit = new Octokit({ auth, userAgent: "github-repo-stats" });
+    _octokit = new Octokit({
+      auth,
+      userAgent: "github-repo-stats",
+      // Octokit logs every failed request; the sync expects some (403 for a missing optional
+      // permission) and reports real failures itself, so keep the console readable.
+      log: { debug: () => {}, info: () => {}, warn: console.warn, error: () => {} },
+    });
   }
   return _octokit;
 }
@@ -246,8 +252,10 @@ export type IssueItem = {
 /**
  * Issues and pull requests (GitHub's issues list includes both) updated since `since`, or all of
  * them when `since` is null. One request per 100 items; usually a single empty page per day.
+ * Null when the token can't read them — private repos need the "Issues: Read-only" and
+ * "Pull requests: Read-only" permissions on a fine-grained token.
  */
-export async function fetchIssues(owner: string, repo: string, since: Date | null, hasIssues = true): Promise<IssueItem[]> {
+export async function fetchIssues(owner: string, repo: string, since: Date | null, hasIssues = true): Promise<IssueItem[] | null> {
   const octokit = getOctokit();
   if (!hasIssues) return fetchPullsOnly(owner, repo, since);
   let rows;
@@ -263,6 +271,7 @@ export async function fetchIssues(owner: string, repo: string, since: Date | nul
     });
   } catch (e) {
     if (statusOf(e) === 410) return fetchPullsOnly(owner, repo, since); // issues turned off
+    if (statusOf(e) === 403) return null;
     throw e;
   }
   return rows.map((i) => ({
@@ -280,9 +289,18 @@ export async function fetchIssues(owner: string, repo: string, since: Date | nul
 }
 
 /** Pull requests only, for repos with issues turned off (the pulls list has no `since`: newest first, stop early). */
-async function fetchPullsOnly(owner: string, repo: string, since: Date | null): Promise<IssueItem[]> {
+async function fetchPullsOnly(owner: string, repo: string, since: Date | null): Promise<IssueItem[] | null> {
   const octokit = getOctokit();
   const out: IssueItem[] = [];
+  try {
+    return await collectPulls(octokit, owner, repo, since, out);
+  } catch (e) {
+    if (statusOf(e) === 403) return null;
+    throw e;
+  }
+}
+
+async function collectPulls(octokit: Octokit, owner: string, repo: string, since: Date | null, out: IssueItem[]) {
   for await (const res of octokit.paginate.iterator(octokit.rest.pulls.list, {
     owner,
     repo,

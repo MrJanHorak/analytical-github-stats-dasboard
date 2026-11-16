@@ -137,6 +137,8 @@ async function loadActivity(since: string, until: string, repoId?: number) {
     /** True once the activity sync has run for at least one repo */
     synced: healthRows.some((h) => h.activitySyncedAt),
     actionsAvailable: healthRows.some((h) => h.actionsAvailable),
+    /** Repos whose issues/PRs the token can't read (missing Issues / Pull requests permission) */
+    issuesUnavailable: healthRows.filter((h) => h.issuesAvailable === false).length,
   };
 }
 
@@ -321,6 +323,7 @@ export async function getOverview(rangeDays: number) {
       synced: activity.synced,
       flow: activity.flow,
       weekly: activity.weekly,
+      issuesUnavailable: activity.issuesUnavailable,
       ci: activity.actionsAvailable ? ciStats(activity.runRows, new Date(since + "T00:00:00Z")) : null,
       security: (() => {
         const known = activity.healthRows.filter((h) => h.dependabotHigh !== null && ownIds.has(h.repoId));
@@ -459,6 +462,7 @@ export async function getRepoDetail(owner: string, name: string, rangeDays: numb
       synced: activity.synced,
       flow: activity.flow,
       weekly: activity.weekly,
+      issuesUnavailable: activity.issuesUnavailable,
       ci: activity.actionsAvailable ? ciStats(activity.runRows, new Date(since + "T00:00:00Z")) : null,
       health: activity.healthRows[0] ?? null,
       /** Open issues and PRs, newest first */
