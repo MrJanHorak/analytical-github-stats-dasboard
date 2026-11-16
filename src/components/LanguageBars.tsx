@@ -31,8 +31,11 @@ export const languageColor = (lang: string) => COLORS[lang] ?? "var(--color-acce
 
 type Item = { language: string; bytes: number; repos?: number };
 
-/** Stacked bar plus one row per language with its share of bytes (and repo count when given). */
-export function LanguageBars({ items }: { items: Item[] }) {
+/**
+ * Stacked bar plus one row per language with its share (and repo count when given).
+ * `bytes` is the weight; pass `unit` to also show the raw value (e.g. lines of code).
+ */
+export function LanguageBars({ items, unit }: { items: Item[]; unit?: string }) {
   const total = items.reduce((a, i) => a + i.bytes, 0);
   if (!total) return null;
   const pct = (b: number) => (b / total) * 100;
@@ -49,6 +52,11 @@ export function LanguageBars({ items }: { items: Item[] }) {
             <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: languageColor(i.language) }} />
             <span className="min-w-0 flex-1 truncate">{i.language}</span>
             {i.repos !== undefined && <span className="text-xs text-zinc-500">{fmt(i.repos)} repo{i.repos === 1 ? "" : "s"}</span>}
+            {unit && (
+              <span className="text-xs tabular-nums text-zinc-500">
+                {fmt(i.bytes)} {unit}
+              </span>
+            )}
             <span className="w-14 text-right tabular-nums text-zinc-400">{pct(i.bytes).toFixed(1)}%</span>
           </li>
         ))}

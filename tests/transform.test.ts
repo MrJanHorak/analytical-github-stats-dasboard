@@ -11,7 +11,6 @@ import {
   joinSeries,
   likelyAutomated,
   mergeTraffic,
-  netLines,
   pctChange,
   pivotReferrers,
   toCsv,
@@ -173,14 +172,6 @@ describe("misc", () => {
     expect(parseRange("90")).toBe(90);
     expect(parseRange("13")).toBe(30);
     expect(rangeParam(0)).toBe("all");
-  });
-});
-
-describe("netLines", () => {
-  it("sums additions and (negative) deletions, never below zero", () => {
-    expect(netLines([[0, 100, -20], [1, 5, -50]])).toBe(35);
-    expect(netLines([])).toBe(0);
-    expect(netLines([[0, 10, -40]])).toBe(0);
   });
 });
 

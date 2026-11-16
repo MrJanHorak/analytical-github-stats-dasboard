@@ -6,6 +6,9 @@ import { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { Readable } from "node:stream";
+import { gzipSync } from "node:zlib";
+import { pack } from "tar-stream";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { schema, setDbForTesting } from "@/lib/db";
 import * as gh from "@/lib/github";
@@ -21,10 +24,22 @@ vi.mock("@/lib/github", () => ({
   fetchStargazers: vi.fn(),
   fetchForks: vi.fn(),
   fetchLanguages: vi.fn(),
-  fetchCodeFrequency: vi.fn(),
+  fetchBranchSha: vi.fn(),
+  fetchTarball: vi.fn(),
   fetchCommitActivity: vi.fn(),
 }));
 const m = vi.mocked(gh);
+
+/** A gzipped GitHub-style tarball (one top-level directory) with the given files. */
+async function tarball(files: Record<string, string>) {
+  const p = pack();
+  for (const [name, body] of Object.entries(files)) p.entry({ name: `jan-repo-abc/${name}` }, body);
+  p.finalize();
+  const chunks: Buffer[] = [];
+  for await (const c of p) chunks.push(c as Buffer);
+  return Readable.from([gzipSync(Buffer.concat(chunks))]);
+}
+const lines = (n: number) => "x();\n\n".repeat(n); // n non-blank lines (+ n blank ones)
 
 const ts = (daysBack: number) => `${daysAgo(daysBack)}T00:00:00Z`;
 
@@ -47,6 +62,7 @@ function repo(id: number, name: string, extra: Record<string, unknown> = {}) {
     watchers_count: 2,
     open_issues_count: 0,
     size: 100,
+    default_branch: "main",
     ...extra,
   };
 }
@@ -94,10 +110,10 @@ beforeEach(() => {
     { forkId: 500, fullName: "someone/alpha", owner: "someone", stars: 1, createdAt: ts(5) },
   ]);
   m.fetchLanguages.mockResolvedValue({ TypeScript: 9000, CSS: 1000 });
-  m.fetchCodeFrequency.mockResolvedValue([
-    [1700000000, 100, -20],
-    [1700604800, 50, -30],
-  ]);
+  m.fetchBranchSha.mockResolvedValue("sha-1");
+  m.fetchTarball.mockImplementation(() =>
+    tarball({ "src/a.ts": lines(80), "src/b.css": lines(20), "package-lock.json": lines(5000), "README.md": lines(50) }),
+  );
 });
 
 describe("runSync", () => {
@@ -108,12 +124,18 @@ describe("runSync", () => {
     expect(result.historyPending).toBe(0);
     expect(result.codeStatsPending).toBe(0);
 
-    // Languages + approximate lines (100 + 50 added, 20 + 30 deleted)
-    const code = await pg.query<{ lines_of_code: number; code_stats_pushed_at: Date }>(
-      "select lines_of_code, code_stats_pushed_at from repos where id = 1",
+    // Languages + lines counted from the default branch's tarball (lock file and README left out)
+    const code = await pg.query<{ lines_of_code: number; code_stats_pushed_at: Date; loc_commit_sha: string }>(
+      "select lines_of_code, code_stats_pushed_at, loc_commit_sha from repos where id = 1",
     );
-    expect(code.rows[0].lines_of_code).toBe(100);
+    expect(code.rows[0]).toMatchObject({ lines_of_code: 100, loc_commit_sha: "sha-1" });
     expect(code.rows[0].code_stats_pushed_at).toBeTruthy();
+    expect(m.fetchTarball).toHaveBeenCalledWith("jan", "alpha", "sha-1");
+    const loc = await pg.query("select language, files, lines, non_blank from repo_loc where repo_id = 1 order by non_blank desc");
+    expect(loc.rows).toEqual([
+      { language: "TypeScript", files: 1, lines: 160, non_blank: 80 },
+      { language: "CSS", files: 1, lines: 40, non_blank: 20 },
+    ]);
     const langs = await pg.query<{ language: string; bytes: number }>(
       "select language, bytes::int as bytes from repo_languages where repo_id = 1 order by bytes desc",
     );
@@ -164,7 +186,7 @@ describe("runSync", () => {
     expect(m.fetchForks).not.toHaveBeenCalled();
     // Not pushed since languages/lines were computed → not refetched
     expect(m.fetchLanguages).not.toHaveBeenCalled();
-    expect(m.fetchCodeFrequency).not.toHaveBeenCalled();
+    expect(m.fetchTarball).not.toHaveBeenCalled();
   });
 
   it("refetches stargazers when the count changes (handles un-stars)", async () => {
@@ -199,7 +221,7 @@ describe("runSync", () => {
     const first = await runSync({ timeBudgetMs: -1 }); // already out of time
     expect(first.reposSynced).toBe(2); // traffic always collected
     expect(first.historyPending).toBe(1);
-    expect(first.codeStatsPending).toBe(1); // "big" is new; no waiting/retrying once out of time
+    expect(first.codeStatsPending).toBe(1); // "big" is new, but no tarball downloads once out of time
     expect(m.fetchStargazers).not.toHaveBeenCalled();
     expect(m.fetchLanguages).not.toHaveBeenCalled();
 
@@ -211,7 +233,7 @@ describe("runSync", () => {
     expect(rows.rows[0].n).toBe(2);
 
     m.listOwnedRepos.mockResolvedValue([repo(1, "alpha"), repo(2, "archived-one", { archived: true, stargazers_count: 0, forks_count: 0 })] as never);
-    await pg.exec("delete from repos where id = 3; delete from star_events where repo_id = 3; delete from traffic_daily where repo_id = 3; delete from traffic_windows where repo_id = 3; delete from referrers where repo_id = 3; delete from popular_paths where repo_id = 3; delete from release_assets where repo_id = 3; delete from repo_snapshots where repo_id = 3; delete from repo_languages where repo_id = 3");
+    await pg.exec("delete from repos where id = 3; delete from star_events where repo_id = 3; delete from traffic_daily where repo_id = 3; delete from traffic_windows where repo_id = 3; delete from referrers where repo_id = 3; delete from popular_paths where repo_id = 3; delete from release_assets where repo_id = 3; delete from repo_snapshots where repo_id = 3; delete from repo_languages where repo_id = 3; delete from repo_loc where repo_id = 3");
     await runSync();
   });
 });
@@ -273,25 +295,29 @@ describe("code stats", () => {
   // These run last: they change alpha's pushed_at and languages.
   const pushedNow = `${isoDay()}T12:00:00Z`;
 
-  it("retries once while GitHub is still computing lines, then leaves it for the next run", async () => {
+  it("recounts lines only when the default branch has a new commit", async () => {
     m.listOwnedRepos.mockResolvedValue([repo(1, "alpha", { pushed_at: pushedNow })] as never);
     m.fetchLanguages.mockResolvedValue({ Python: 500 });
-    m.fetchCodeFrequency.mockResolvedValue(null);
-    const first = await runSync({ codeStatsRetryMs: 0 });
+    // Pushed (e.g. to a feature branch) but main hasn't moved → languages refresh, no download
+    const first = await runSync();
     expect(first.errors).toEqual([]);
-    expect(first.codeStatsPending).toBe(1);
-    expect(m.fetchCodeFrequency).toHaveBeenCalledTimes(2);
-    // Languages are stored right away; the old line count stays until GitHub has the new one
+    expect(first.codeStatsPending).toBe(0);
+    expect(m.fetchTarball).not.toHaveBeenCalled();
     const langs = await pg.query<{ language: string }>("select language from repo_languages where repo_id = 1");
     expect(langs.rows.map((r) => r.language)).toEqual(["Python"]);
     const before = await pg.query<{ lines_of_code: number }>("select lines_of_code from repos where id = 1");
     expect(before.rows[0].lines_of_code).toBe(100);
 
-    m.fetchCodeFrequency.mockResolvedValue([[1700000000, 400, -10]]);
-    const second = await runSync({ codeStatsRetryMs: 0 });
-    expect(second.codeStatsPending).toBe(0);
+    m.listOwnedRepos.mockResolvedValue([repo(1, "alpha", { pushed_at: `${isoDay()}T13:00:00Z` })] as never);
+    m.fetchBranchSha.mockResolvedValue("sha-2");
+    m.fetchTarball.mockImplementation(() => tarball({ "app.py": lines(390) }));
+    const second = await runSync();
+    expect(second.errors).toEqual([]);
+    expect(m.fetchTarball).toHaveBeenCalledWith("jan", "alpha", "sha-2");
     const after = await pg.query<{ lines_of_code: number }>("select lines_of_code from repos where id = 1");
     expect(after.rows[0].lines_of_code).toBe(390);
+    const loc = await pg.query<{ language: string }>("select language from repo_loc where repo_id = 1");
+    expect(loc.rows.map((r) => r.language)).toEqual(["Python"]); // old TypeScript/CSS rows replaced
   });
 
   it("getOverview totals languages and lines across your own repos, leaving forks out", async () => {
@@ -317,13 +343,31 @@ describe("code stats", () => {
     expect(d.likelyAutomated).toBe(false);
   });
 
-  it("marks lines as unknown when GitHub can't compute them (10k+ commits)", async () => {
+  it("reports a failed download as an error and retries on the next run", async () => {
+    m.listOwnedRepos.mockResolvedValue([repo(1, "alpha", { pushed_at: `${isoDay()}T15:00:00Z` })] as never);
+    m.fetchBranchSha.mockResolvedValue("sha-3");
+    m.fetchTarball.mockRejectedValue(new Error("tarball jan/alpha@sha-3: HTTP 502"));
+    const r = await runSync();
+    expect(r.errors).toEqual([{ repo: "jan/alpha (code stats)", error: "tarball jan/alpha@sha-3: HTTP 502" }]);
+    const row = await pg.query<{ lines_of_code: number; loc_commit_sha: string }>("select lines_of_code, loc_commit_sha from repos where id = 1");
+    expect(row.rows[0]).toEqual({ lines_of_code: 390, loc_commit_sha: "sha-2" }); // previous count kept
+    m.fetchTarball.mockImplementation(() => tarball({ "app.py": lines(400) }));
+    await runSync();
+    const fixed = await pg.query<{ lines_of_code: number }>("select lines_of_code from repos where id = 1");
+    expect(fixed.rows[0].lines_of_code).toBe(400);
+  });
+
+  it("counts an empty repo as zero lines and skips downloading very large repos", async () => {
     m.listOwnedRepos.mockResolvedValue([repo(1, "alpha", { pushed_at: `${isoDay()}T18:00:00Z` })] as never);
-    m.fetchCodeFrequency.mockRejectedValue(Object.assign(new Error("too many commits"), { status: 422 }));
-    const r = await runSync({ codeStatsRetryMs: 0 });
-    expect(r.errors).toEqual([]);
-    expect(r.codeStatsPending).toBe(0);
-    const row = await pg.query<{ lines_of_code: number | null }>("select lines_of_code from repos where id = 1");
-    expect(row.rows[0].lines_of_code).toBeNull();
+    m.fetchBranchSha.mockResolvedValue(null);
+    expect((await runSync()).errors).toEqual([]);
+    const empty = await pg.query<{ lines_of_code: number }>("select lines_of_code from repos where id = 1");
+    expect(empty.rows[0].lines_of_code).toBe(0);
+
+    m.listOwnedRepos.mockResolvedValue([repo(1, "alpha", { pushed_at: `${isoDay()}T19:00:00Z`, size: 600 * 1024 })] as never);
+    expect((await runSync()).errors).toEqual([]);
+    expect(m.fetchTarball).not.toHaveBeenCalled();
+    const big = await pg.query<{ lines_of_code: number | null }>("select lines_of_code from repos where id = 1");
+    expect(big.rows[0].lines_of_code).toBeNull();
   });
 });

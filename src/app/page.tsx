@@ -126,11 +126,17 @@ export default async function Overview({ searchParams }: { searchParams: Promise
           <h2 className="text-sm font-medium text-zinc-400">Lines of code</h2>
           {code.reposWithLines ? (
             <>
-              <div className="mt-1 text-2xl font-semibold tabular-nums">≈ {fmt(code.linesOfCode)}</div>
+              <div className="mt-1 text-2xl font-semibold tabular-nums">{fmt(code.linesOfCode)}</div>
               <p className="mb-3 text-xs text-zinc-500">
-                across {code.reposWithLines} of {code.reposCounted} repos · forks excluded · approximate: lines added minus
-                deleted over all commits, so lockfiles and other generated files count too
+                non-blank lines on default branches · {code.reposWithLines} of {code.reposCounted} repos · forks excluded ·
+                lock files, vendored, generated, minified and non-code files (Markdown, JSON, YAML) left out
               </p>
+              {code.linesByLanguage.length > 0 && (
+                <div className="mb-4">
+                  <LanguageBars items={topWithOther(code.linesByLanguage, 6)} unit="lines" />
+                </div>
+              )}
+              <h3 className="mb-1.5 text-xs font-medium text-zinc-500">Largest repos</h3>
               <ul className="space-y-1.5 text-sm">
                 {code.largest.map((r) => (
                   <li key={r.fullName} className="flex items-center gap-2">

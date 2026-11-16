@@ -206,15 +206,27 @@ export default async function RepoPage({ params, searchParams }: Props) {
         />
         <section className="min-w-0 rounded-xl border border-zinc-800 p-4">
           <h2 className="text-sm font-medium text-zinc-400">Code</h2>
-          <p className="mb-3 text-xs text-zinc-500" title="Lines added minus deleted over all commits (GitHub code_frequency); includes lockfiles and generated files">
+          <p
+            className="mb-3 text-xs text-zinc-500"
+            title="Non-blank lines on the default branch. Lock files, vendored and build directories, generated and minified files, and non-code files (Markdown, JSON, YAML) are left out; .gitattributes linguist-* rules are honoured."
+          >
             {repo.linesOfCode !== null
-              ? `≈ ${fmt(repo.linesOfCode)} lines (approximate)`
+              ? `${fmt(repo.linesOfCode)} lines of code${repo.locCommitSha && repo.locCommitSha !== "demo" ? ` · at ${repo.locCommitSha.slice(0, 7)}` : ""}`
               : repo.codeStatsPushedAt
-                ? "Line count unavailable (GitHub can't compute it for repos with 10,000+ commits)"
+                ? "Line count skipped (repository larger than 500 MB)"
                 : "Line count appears after the next sync"}
           </p>
+          {data.loc.length > 0 && (
+            <div className="mb-4">
+              <h3 className="mb-1.5 text-xs font-medium text-zinc-500">Lines by language</h3>
+              <LanguageBars items={data.loc.map((l) => ({ language: l.language, bytes: l.nonBlank }))} unit="lines" />
+            </div>
+          )}
           {languages.length ? (
-            <LanguageBars items={languages} />
+            <>
+              {data.loc.length > 0 && <h3 className="mb-1.5 text-xs font-medium text-zinc-500">Bytes by language (GitHub)</h3>}
+              <LanguageBars items={languages} />
+            </>
           ) : (
             <p className="text-sm text-zinc-500">No language data yet.</p>
           )}

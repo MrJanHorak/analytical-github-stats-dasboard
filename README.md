@@ -11,8 +11,8 @@ A self-hosted Next.js dashboard for **views, unique visitors, clones, referrers,
 | | |
 |---|---|
 | **Overview** | Totals with % change vs the previous period, language and lines-of-code totals, a 🤖 hint on clones that look automated, daily traffic chart, sortable/filterable repo table with sparklines, top referrers with trends, recent alerts, CSV export |
-| **Repo detail** | Views & clones (total vs unique), full star & fork history, recent stargazers and forks, referrer trend, popular content, languages and approximate lines of code, likely-automated clone hint, weekly commits, release downloads |
-| **Code** | Languages across all your repos (share of bytes, repos per language) and approximate lines of code per repo and in total, refreshed when a repo is pushed. Forks are left out of the totals |
+| **Repo detail** | Views & clones (total vs unique), full star & fork history, recent stargazers and forks, referrer trend, popular content, languages, lines of code by language, likely-automated clone hint, weekly commits, release downloads |
+| **Code** | Languages across all your repos (share of bytes, repos per language) and real lines of code per repo, per language and in total — counted from each repo's default branch with lock files, vendored, generated and non-code files left out, and recounted only when the default branch gets a new commit. Forks are left out of the totals |
 | **History** | Traffic is stored daily, so it outlives GitHub's 14-day limit. Star and fork history is rebuilt from GitHub's timestamps, back to the day each repo was created |
 | **Alerts** | Traffic spikes, star bursts and star milestones, shown in the app and optionally posted to Slack or Discord |
 | **Notes** | Pin notes like "Posted on Hacker News" to a date; they show as markers on the charts |
@@ -24,7 +24,7 @@ A self-hosted Next.js dashboard for **views, unique visitors, clones, referrers,
 <table>
 <tr>
 <td width="50%"><b>Languages</b> — share of code by bytes, and how many repos use each<br><img src="docs/languages.png" alt="Languages across all repos"></td>
-<td width="50%"><b>Lines of code</b> — approximate total and largest repos<br><img src="docs/lines-of-code.png" alt="Lines of code"></td>
+<td width="50%"><b>Lines of code</b> — total, by language and largest repos<br><img src="docs/lines-of-code.png" alt="Lines of code"></td>
 </tr>
 </table>
 
@@ -108,7 +108,15 @@ Use `&label=…` to change the left-hand text. Badges skip `DASHBOARD_PASSWORD` 
 
 ## About lines of code and automated clones
 
-GitHub has no "lines of code" number. The sync sums GitHub's weekly additions minus deletions over the repo's whole history (`stats/code_frequency`), so it counts every file, including lockfiles and generated code. Treat it as a rough size. GitHub computes these stats on demand: a repo it is still working on is retried a few seconds later and otherwise filled in by the next sync, and repos with 10,000+ commits get no count. Languages come from GitHub's Linguist byte counts, which already skip vendored and generated files.
+GitHub has no "lines of code" number, so the sync counts them itself: it streams the tarball of each repo's default branch (nothing is written to disk) and counts **non-blank lines** in code files. Left out:
+
+- **Lock files** (`package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `Cargo.lock`, `poetry.lock`, `go.sum`, …)
+- **Vendored and build output** directories at any depth (`node_modules`, `vendor`, `dist`, `build`, `out`, `.next`, `coverage`, `target`, …)
+- **Minified files and source maps** (`*.min.js`, `*.map`, or an average line longer than 300 characters), **binaries**, and files over 1 MB
+- **Non-code files**: prose and data such as Markdown, JSON, YAML and plain text. Language comes from the file extension (see `src/lib/loc.ts`)
+- Anything your `.gitattributes` marks `linguist-generated`, `linguist-vendored` or `linguist-documentation`. It works the other way too: `dist/** -linguist-vendored` counts a directory back in, and `*.inc linguist-language=PHP` changes the language
+
+A repo is only re-downloaded when its default branch has a new commit, so pushes to other branches cost one API call. Repos larger than 500 MB are skipped. Counting needs the token's **Contents: Read-only** permission. The language bars still show GitHub's Linguist byte counts next to the line counts.
 
 GitHub doesn't say who viewed or cloned a repo, so there is no way to separate people from bots. The 🤖 hint is a heuristic: a repo with at least 10 clones and more than twice as many clones as views in the selected range is flagged, because CI runs, mirrors and deploy hosts (Vercel and Netlify clone on every build) clone without ever opening the page.
 

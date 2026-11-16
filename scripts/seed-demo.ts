@@ -6,7 +6,7 @@ import { eq, inArray, sql } from "drizzle-orm";
 import { getDb, schema } from "../src/lib/db";
 import { daysAgo, isoDay } from "../src/lib/utils";
 
-const { alerts, annotations, repos, repoLanguages, repoSnapshots, trafficDaily, trafficWindows, referrers, popularPaths, releaseAssets, starEvents, forkEvents, syncRuns } =
+const { alerts, annotations, repos, repoLanguages, repoLoc, repoSnapshots, trafficDaily, trafficWindows, referrers, popularPaths, releaseAssets, starEvents, forkEvents, syncRuns } =
   schema;
 
 // Deterministic PRNG so screenshots are stable
@@ -37,7 +37,7 @@ const DAYS = 120;
 async function main() {
   const db = getDb();
   const ids = DEMO.map((_, i) => 900001 + i);
-  for (const t of [alerts, annotations, repoLanguages, trafficDaily, trafficWindows, repoSnapshots, referrers, popularPaths, releaseAssets, starEvents, forkEvents]) {
+  for (const t of [alerts, annotations, repoLanguages, repoLoc, trafficDaily, trafficWindows, repoSnapshots, referrers, popularPaths, releaseAssets, starEvents, forkEvents]) {
     await db.delete(t).where(inArray(t.repoId, ids));
   }
   await db.delete(repos).where(inArray(repos.id, ids));
@@ -165,7 +165,15 @@ async function main() {
   // Languages + lines of code; dotfiles gets cloned by "CI" every day so it shows the likely-automated hint
   for (const [i, c] of CODE.entries()) {
     await db.insert(repoLanguages).values(Object.entries(c.languages).map(([language, bytes]) => ({ repoId: ids[i], language, bytes })));
-    await db.update(repos).set({ linesOfCode: c.lines, codeStatsPushedAt: new Date() }).where(eq(repos.id, ids[i]));
+    // Split the line count across languages roughly by bytes, like the tarball counter would report
+    const totalBytes = Object.values(c.languages).reduce((a, b) => a + b, 0);
+    const loc = Object.entries(c.languages).map(([language, bytes]) => {
+      const nonBlank = Math.round((c.lines * bytes) / totalBytes);
+      return { repoId: ids[i], language, files: Math.max(1, Math.round(nonBlank / 90)), lines: Math.round(nonBlank * 1.12), nonBlank };
+    });
+    await db.insert(repoLoc).values(loc);
+    const linesOfCode = loc.reduce((a, l) => a + l.nonBlank, 0);
+    await db.update(repos).set({ linesOfCode, codeStatsPushedAt: new Date(), locCommitSha: "demo" }).where(eq(repos.id, ids[i]));
   }
   await db
     .update(trafficDaily)

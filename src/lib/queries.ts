@@ -16,6 +16,7 @@ const {
   annotations,
   repos,
   repoLanguages,
+  repoLoc,
   repoSnapshots,
   trafficDaily,
   trafficWindows,
@@ -70,7 +71,7 @@ export async function getOverview(rangeDays: number) {
   const db = getDb();
   const { since, until, prevSince } = await windowFor(rangeDays);
 
-  const [allRepos, traffic, perRepoDaily, daily, prev, latestSnaps, starsGained, forksGained, lastRun, langRows] =
+  const [allRepos, traffic, perRepoDaily, daily, prev, latestSnaps, starsGained, forksGained, lastRun, langRows, locRows] =
     await Promise.all([
       db.select().from(repos),
       db.select({ repoId: trafficDaily.repoId, ...trafficSums }).from(trafficDaily).where(gte(trafficDaily.date, since)).groupBy(trafficDaily.repoId),
@@ -104,6 +105,7 @@ export async function getOverview(rangeDays: number) {
         .groupBy(forkEvents.repoId),
       db.select().from(syncRuns).orderBy(desc(syncRuns.startedAt)).limit(1),
       db.select().from(repoLanguages),
+      db.select({ repoId: repoLoc.repoId, language: repoLoc.language, bytes: repoLoc.nonBlank }).from(repoLoc),
     ]);
 
   const trafficBy = new Map(traffic.map((t) => [t.repoId, t]));
@@ -140,6 +142,8 @@ export async function getOverview(rangeDays: number) {
   const withLines = ownRepos.filter((r) => r.linesOfCode !== null);
   const code = {
     languages: aggregateLanguages(langRows.filter((l) => ownIds.has(l.repoId))),
+    /** Non-blank lines per language (in the `bytes` field, so the same helpers/components work) */
+    linesByLanguage: aggregateLanguages(locRows.filter((l) => ownIds.has(l.repoId))),
     linesOfCode: withLines.reduce((a, r) => a + (r.linesOfCode ?? 0), 0),
     reposWithLines: withLines.length,
     reposCounted: ownRepos.length,
@@ -246,7 +250,7 @@ export async function getRepoDetail(owner: string, name: string, rangeDays: numb
   const latestFor = (table: typeof referrers | typeof popularPaths | typeof releaseAssets) =>
     sql`${table.date} = (select max(date) from ${table} where repo_id = ${repo.id})`;
 
-  const [daily, prev, latestSnap, refs, paths, assets, downloadsByDay, stars, forks, windows, refHistory, notes, repoAlerts, langs] = await Promise.all([
+  const [daily, prev, latestSnap, refs, paths, assets, downloadsByDay, stars, forks, windows, refHistory, notes, repoAlerts, langs, loc] = await Promise.all([
     db
       .select()
       .from(trafficDaily)
@@ -294,6 +298,11 @@ export async function getRepoDetail(owner: string, name: string, rangeDays: numb
       .from(repoLanguages)
       .where(eq(repoLanguages.repoId, repo.id))
       .orderBy(desc(repoLanguages.bytes)),
+    db
+      .select({ language: repoLoc.language, files: repoLoc.files, lines: repoLoc.lines, nonBlank: repoLoc.nonBlank })
+      .from(repoLoc)
+      .where(eq(repoLoc.repoId, repo.id))
+      .orderBy(desc(repoLoc.nonBlank)),
   ]);
 
   // Trend for the referrers that matter most right now (top 5 in the latest window)
@@ -329,6 +338,8 @@ export async function getRepoDetail(owner: string, name: string, rangeDays: numb
     likelyAutomated: likelyAutomated(totals),
     /** Stored by the sync; empty until the first sync that computes code stats */
     languages: langs,
+    /** Lines of code per language on the default branch; empty until counted */
+    loc,
     window14: windows[0] ?? null,
     referrerTrend,
     notes,
