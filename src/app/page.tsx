@@ -159,7 +159,12 @@ export default async function Overview({ searchParams }: { searchParams: Promise
       {data.activity.synced ? (
         <>
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-            <IssueFlowPanel flow={data.activity.flow} weekly={data.activity.weekly} rangeLabel={`${rt} · your repos, forks and archived excluded`} />
+            <IssueFlowPanel
+              flow={data.activity.flow}
+              weekly={data.activity.weekly}
+              rangeLabel={`${rt} · your repos, forks and archived excluded`}
+              unavailable={data.activity.issuesUnavailable}
+            />
             <CiPanel ci={data.activity.ci} range={rangeParam(range)} showRepo />
           </div>
           {data.activity.security && (

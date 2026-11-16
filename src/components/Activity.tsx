@@ -20,11 +20,43 @@ function Kpi({ label, value, sub }: { label: string; value: string; sub?: string
   );
 }
 
-export function IssueFlowPanel({ flow, weekly, rangeLabel }: { flow: Flow; weekly: { date: string; opened: number; closed: number }[]; rangeLabel: string }) {
+export function IssueFlowPanel({
+  flow,
+  weekly,
+  rangeLabel,
+  unavailable = 0,
+  single = false,
+}: {
+  flow: Flow;
+  weekly: { date: string; opened: number; closed: number }[];
+  rangeLabel: string;
+  /** Repos the token can't read issues for */
+  unavailable?: number;
+  /** One repo's page: say so plainly instead of counting repos */
+  single?: boolean;
+}) {
+  const permission = (
+    <>
+      add <b>Issues: Read-only</b> and <b>Pull requests: Read-only</b> to your token (needed for private repos)
+    </>
+  );
+  if (single && unavailable) {
+    return (
+      <section className="min-w-0 rounded-xl border border-zinc-800 p-4">
+        <h2 className="text-sm font-medium text-zinc-400">Issues &amp; pull requests</h2>
+        <p className="mt-2 text-sm text-zinc-500">The token can&apos;t read this repo&apos;s issues — {permission}.</p>
+      </section>
+    );
+  }
   return (
     <section className="min-w-0 rounded-xl border border-zinc-800 p-4">
       <h2 className="text-sm font-medium text-zinc-400">Issues &amp; pull requests</h2>
       <p className="mb-3 text-xs text-zinc-500">{rangeLabel} · open counts are current</p>
+      {unavailable > 0 && (
+        <p className="mb-3 rounded-md bg-amber-500/10 px-2 py-1.5 text-xs text-amber-300">
+          {unavailable} repo{unavailable === 1 ? "" : "s"} left out — {permission}.
+        </p>
+      )}
       <div className="mb-4 grid grid-cols-3 gap-3">
         <Kpi label="Issues opened / closed" value={`${fmt(flow.issuesOpened)} / ${fmt(flow.issuesClosed)}`} sub={`${fmt(flow.openIssues)} open now`} />
         <Kpi label="PRs opened / merged" value={`${fmt(flow.prsOpened)} / ${fmt(flow.prsMerged)}`} sub={`${fmt(flow.openPrs)} open now`} />

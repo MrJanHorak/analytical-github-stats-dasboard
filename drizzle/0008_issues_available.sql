@@ -1,0 +1,1 @@
+ALTER TABLE "repo_health" ADD COLUMN "issues_available" boolean;

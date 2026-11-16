@@ -561,6 +561,21 @@ describe("repo activity", () => {
     expect(h.rows[0].runs_synced_at).not.toBeNull(); // previous marker kept for when access returns
   });
 
+  it("treats a token without the Issues permission (private repos) as unavailable, not an error", async () => {
+    m.listOwnedRepos.mockResolvedValue([repo(1, "alpha")] as never);
+    const before = await pg.query<{ t: Date }>("select issues_synced_at as t from repo_health where repo_id = 1");
+    m.fetchIssues.mockResolvedValue(null);
+    const r = await runSync();
+    expect(r.errors).toEqual([]);
+    const h = await pg.query<{ issues_available: boolean; t: Date }>("select issues_available, issues_synced_at as t from repo_health where repo_id = 1");
+    expect(h.rows[0].issues_available).toBe(false);
+    expect(h.rows[0].t).toEqual(before.rows[0].t); // marker kept, so nothing is missed once access is granted
+    expect((await getOverview(30)).activity.issuesUnavailable).toBe(1);
+    m.fetchIssues.mockResolvedValue([]);
+    await runSync();
+    expect((await getOverview(30)).activity.issuesUnavailable).toBe(0);
+  });
+
   it("leaves activity for the next run when out of time, and reports failures per repo", async () => {
     m.listOwnedRepos.mockResolvedValue([repo(1, "alpha")] as never);
     const r = await runSync({ timeBudgetMs: -1 });

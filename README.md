@@ -74,7 +74,7 @@ See [PLAN.md](./PLAN.md) for the architecture, data model and roadmap.
 
 ## Setup
 
-1. **Token**: create a [fine-grained PAT](https://github.com/settings/personal-access-tokens/new) with *All repositories*, **Administration: Read-only**, **Contents: Read-only** (release download counts, line counting) and **Metadata: Read-only** (or a classic token with `repo`). Optional: **Actions: Read-only** for CI stats and **Dependabot alerts: Read-only** for security alerts — without them those panels say what's missing and everything else works.
+1. **Token**: create a [fine-grained PAT](https://github.com/settings/personal-access-tokens/new) with *All repositories*, **Administration: Read-only**, **Contents: Read-only** (release download counts, line counting), **Issues: Read-only** and **Pull requests: Read-only** (issue/PR stats for private repos — public ones work without) and **Metadata: Read-only** (or a classic token with `repo`). Optional: **Actions: Read-only** for CI stats and **Dependabot alerts: Read-only** for security alerts. Whatever is missing, the sync skips quietly and the panel says which permission to add; everything else works. You can add permissions to an existing fine-grained token without changing its value.
    GitHub is restricting the stargazers list to repo admins and collaborators; when it refuses a repo (403), the sync skips that repo's star *history* and says so. Star counts still update.
 2. **Database**: create a Postgres database. [Neon](https://neon.tech)'s free tier works well; Railway, Supabase or a local Docker container work too.
 3. **Configure and run**

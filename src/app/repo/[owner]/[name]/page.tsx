@@ -372,7 +372,7 @@ function ActivitySections({ activity, range, rangeLabel, fullName }: { activity:
   return (
     <>
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        <IssueFlowPanel flow={activity.flow} weekly={activity.weekly} rangeLabel={rangeLabel} />
+        <IssueFlowPanel flow={activity.flow} weekly={activity.weekly} rangeLabel={rangeLabel} unavailable={activity.issuesUnavailable} single />
         <CiPanel ci={activity.ci} range={range} />
       </div>
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
