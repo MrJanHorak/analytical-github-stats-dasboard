@@ -149,6 +149,30 @@ describe("countTarball", () => {
       { language: "CSS", files: 1, lines: 3, nonBlank: 3 },
     ]);
     expect(s.nonBlank).toBe(8);
+    expect(s.frameworks).toEqual([]); // package.json above has no dependencies
+  });
+
+  it("detects frameworks from manifests and config files, ignoring vendored ones", async () => {
+    const s = await countTarball(
+      await tarball({
+        "package.json": JSON.stringify({ dependencies: { next: "^15.1.0", react: "^19.0.0" }, devDependencies: { vitest: "^3.0.0" } }),
+        "api/requirements.txt": "fastapi==0.115.0\n",
+        "node_modules/express/package.json": JSON.stringify({ dependencies: { express: "4" } }),
+        "Dockerfile": "FROM node:22\n",
+        ".github/workflows/ci.yml": "on: push\n",
+        "src/index.ts": "export {};\n",
+      }),
+    );
+    expect(s.frameworks.map((f) => `${f.name}@${f.version}`)).toEqual([
+      "React@19.0.0",
+      "Next.js@15.1.0",
+      "FastAPI@0.115.0",
+      "Vitest@3.0.0",
+      "Docker@null",
+      "GitHub Actions@null",
+    ]);
+    // Manifests are read for frameworks but not counted as code; the vendored express file is neither
+    expect(s.languages.map((l) => l.language).sort()).toEqual(["Dockerfile", "TypeScript"]);
   });
 
   it("handles an empty repository", async () => {

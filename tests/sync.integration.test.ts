@@ -146,7 +146,13 @@ beforeEach(() => {
   m.fetchDependabotAlerts.mockResolvedValue(null);
   m.fetchBranchSha.mockResolvedValue("sha-1");
   m.fetchTarball.mockImplementation(() =>
-    tarball({ "src/a.ts": lines(80), "src/b.css": lines(20), "package-lock.json": lines(5000), "README.md": lines(50) }),
+    tarball({
+      "src/a.ts": lines(80),
+      "src/b.css": lines(20),
+      "package-lock.json": lines(5000),
+      "README.md": lines(50),
+      "package.json": JSON.stringify({ dependencies: { react: "^19.0.0" }, devDependencies: { vite: "^6.0.0" } }),
+    }),
   );
 });
 
@@ -170,6 +176,15 @@ describe("runSync", () => {
       { language: "TypeScript", files: 1, lines: 160, non_blank: 80 },
       { language: "CSS", files: 1, lines: 40, non_blank: 20 },
     ]);
+    const fw = await pg.query("select framework, category, version from repo_frameworks where repo_id = 1 order by framework");
+    expect(fw.rows).toEqual([
+      { framework: "React", category: "Frontend", version: "19.0.0" },
+      { framework: "Vite", category: "Build & tooling", version: "6.0.0" },
+    ]);
+    const o = await getOverview(30);
+    expect(o.code.frameworks[0]).toEqual({ category: "Frontend", frameworks: [{ name: "React", category: "Frontend", repos: 2, newest: "19.0.0" }] }); // both repos share the mocked tarball
+    expect(o.repos.find((r) => r.id === 1)!.frameworks.sort()).toEqual(["React", "Vite"]);
+    expect((await getRepoDetail("jan", "alpha", 30))!.frameworks.map((f) => f.name)).toEqual(["React", "Vite"]);
     const langs = await pg.query<{ language: string; bytes: number }>(
       "select language, bytes::int as bytes from repo_languages where repo_id = 1 order by bytes desc",
     );

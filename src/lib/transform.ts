@@ -410,3 +410,39 @@ export function shortDuration(hours: number | null): string {
   if (hours < 48) return `${Math.round(hours * 10) / 10}h`;
   return `${Math.round((hours / 24) * 10) / 10}d`;
 }
+
+// --- Frameworks (M3.8) ---------------------------------------------------------------------------
+
+/**
+ * Frameworks across repos, grouped by category (in `categoryOrder`), most-used first: how many
+ * repos declare each and the newest version seen.
+ */
+export function aggregateFrameworks(
+  rows: { repoId: number; framework: string; category: string; version: string | null }[],
+  categoryOrder: readonly string[],
+) {
+  const by = new Map<string, { name: string; category: string; repos: number; newest: string | null }>();
+  for (const r of rows) {
+    const cur = by.get(r.framework) ?? { name: r.framework, category: r.category, repos: 0, newest: null };
+    cur.repos++;
+    if (r.version && (!cur.newest || versionCompare(r.version, cur.newest) > 0)) cur.newest = r.version;
+    by.set(r.framework, cur);
+  }
+  const all = [...by.values()];
+  return categoryOrder
+    .map((category) => ({
+      category,
+      frameworks: all.filter((f) => f.category === category).sort((a, b) => b.repos - a.repos || a.name.localeCompare(b.name)),
+    }))
+    .filter((g) => g.frameworks.length);
+}
+
+function versionCompare(a: string, b: string) {
+  const pa = a.split(".").map(Number);
+  const pb = b.split(".").map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] ?? 0) - (pb[i] ?? 0);
+    if (d) return d;
+  }
+  return 0;
+}

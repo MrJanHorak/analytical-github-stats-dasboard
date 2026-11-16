@@ -6,7 +6,7 @@ import { eq, inArray, sql } from "drizzle-orm";
 import { getDb, schema } from "../src/lib/db";
 import { daysAgo, isoDay } from "../src/lib/utils";
 
-const { alerts, annotations, contributionDays, contributionRepos, contributionYears, profileSnapshots, issues, workflowRuns, repoHealth, repos, repoLanguages, repoLoc, repoSnapshots, trafficDaily, trafficWindows, referrers, popularPaths, releaseAssets, starEvents, forkEvents, syncRuns } =
+const { alerts, annotations, contributionDays, contributionRepos, contributionYears, profileSnapshots, issues, workflowRuns, repoHealth, repoFrameworks, repos, repoLanguages, repoLoc, repoSnapshots, trafficDaily, trafficWindows, referrers, popularPaths, releaseAssets, starEvents, forkEvents, syncRuns } =
   schema;
 
 // Deterministic PRNG so screenshots are stable
@@ -37,7 +37,7 @@ const DAYS = 120;
 async function main() {
   const db = getDb();
   const ids = DEMO.map((_, i) => 900001 + i);
-  for (const t of [alerts, annotations, issues, workflowRuns, repoHealth, repoLanguages, repoLoc, trafficDaily, trafficWindows, repoSnapshots, referrers, popularPaths, releaseAssets, starEvents, forkEvents]) {
+  for (const t of [alerts, annotations, issues, workflowRuns, repoHealth, repoFrameworks, repoLanguages, repoLoc, trafficDaily, trafficWindows, repoSnapshots, referrers, popularPaths, releaseAssets, starEvents, forkEvents]) {
     await db.delete(t).where(inArray(t.repoId, ids));
   }
   await db.delete(repos).where(inArray(repos.id, ids));
@@ -192,6 +192,20 @@ async function main() {
     { repoId: top, date: daysAgo(29), kind: "stars_burst", value: 23, message: `demo/${DEMO[0].name}: +23 stars on ${daysAgo(29)}` },
     { repoId: ids[1], date: daysAgo(6), kind: "stars_milestone_200", value: 200, message: `demo/${DEMO[1].name} reached 200 stars ⭐` },
   ]);
+
+  // Frameworks & tools, as the line counter would detect them
+  const FW: Record<string, [string, string, string | null][]> = {
+    "balsa-glider-designer": [["React", "Frontend", "19.0.0"], ["Three.js", "Frontend", "0.170.0"], ["Next.js", "Full-stack", "15.1.0"], ["Tailwind CSS", "Styling & UI", "4.0.0"], ["Vitest", "Testing", "3.0.0"], ["TypeScript", "Build & tooling", "5.7.2"], ["Vercel", "Deployment", null], ["GitHub Actions", "Deployment", null]],
+    terratime: [["React", "Frontend", "18.3.1"], ["Mapbox", "Frontend", "3.8.0"], ["Recharts", "Frontend", "2.13.0"], ["Vite", "Build & tooling", "6.0.3"], ["Tailwind CSS", "Styling & UI", "3.4.15"], ["TypeScript", "Build & tooling", "5.6.3"], ["Netlify", "Deployment", null], ["GitHub Actions", "Deployment", null]],
+    "spot-on-shelves": [["React", "Frontend", "18.3.1"], ["Vite", "Build & tooling", "5.4.10"], ["Playwright", "Testing", "1.48.0"], ["Vitest", "Testing", "2.1.4"], ["TypeScript", "Build & tooling", "5.6.3"], ["GitHub Actions", "Deployment", null]],
+    "pomodoro-timer": [["React", "Frontend", "18.2.0"], ["Vite", "Build & tooling", "4.5.0"], ["Jest", "Testing", "29.7.0"], ["Netlify", "Deployment", null]],
+    "fire-pit-tool": [["Next.js", "Full-stack", "15.0.3"], ["React", "Frontend", "19.0.0"], ["Express", "Backend", "4.21.1"], ["Prisma", "Data & ORM", "5.22.0"], ["PostgreSQL", "Data & ORM", null], ["Tailwind CSS", "Styling & UI", "3.4.15"], ["TypeScript", "Build & tooling", "5.6.3"], ["Docker", "Deployment", null], ["Railway", "Deployment", null]],
+    dotfiles: [],
+  };
+  for (const [i, d] of DEMO.entries()) {
+    const rows = FW[d.name].map(([framework, category, version]) => ({ repoId: ids[i], framework, category, version }));
+    if (rows.length) await db.insert(repoFrameworks).values(rows);
+  }
 
   // Issues & PRs, Actions runs, community health and Dependabot alerts per repo
   const PEOPLE = ["mira-k", "tobias-dev", "lena.codes", "sam-ruiz", "okafor", "j-chen"];

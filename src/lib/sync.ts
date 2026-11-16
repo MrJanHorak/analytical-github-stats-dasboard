@@ -20,6 +20,7 @@ import { isoDay, mapLimit } from "./utils";
 const {
   repos,
   repoLanguages,
+  repoFrameworks,
   repoLoc,
   repoSnapshots,
   trafficDaily,
@@ -224,6 +225,7 @@ async function syncCodeStats(r: OwnedRepo, countedSha: string | null) {
 
   if ((r.size ?? 0) > MAX_LOC_REPO_KB) {
     await db.delete(repoLoc).where(eq(repoLoc.repoId, r.id));
+    await db.delete(repoFrameworks).where(eq(repoFrameworks.repoId, r.id));
     return markDone({ linesOfCode: null, locCommitSha: null });
   }
   const sha = await fetchBranchSha(owner, r.name, r.default_branch);
@@ -233,6 +235,9 @@ async function syncCodeStats(r: OwnedRepo, countedSha: string | null) {
   await db.delete(repoLoc).where(eq(repoLoc.repoId, r.id));
   const locRows = (summary?.languages ?? []).map((l) => ({ repoId: r.id, ...l }));
   if (locRows.length) await db.insert(repoLoc).values(locRows).onConflictDoNothing();
+  await db.delete(repoFrameworks).where(eq(repoFrameworks.repoId, r.id));
+  const fwRows = (summary?.frameworks ?? []).map((f) => ({ repoId: r.id, framework: f.name, category: f.category, version: f.version }));
+  if (fwRows.length) await db.insert(repoFrameworks).values(fwRows).onConflictDoNothing();
   return markDone({ linesOfCode: summary?.nonBlank ?? 0, locCommitSha: sha });
 }
 
