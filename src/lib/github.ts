@@ -123,3 +123,105 @@ export async function fetchCommitActivity(owner: string, repo: string) {
   const res = await getOctokit().rest.repos.getCommitActivityStats({ owner, repo });
   return Array.isArray(res.data) ? res.data : [];
 }
+
+/** The token's own account: login, creation date and follower counts. */
+export async function fetchViewer() {
+  const { data } = await getOctokit().rest.users.getAuthenticated();
+  return {
+    login: data.login,
+    createdAt: data.created_at,
+    followers: data.followers,
+    following: data.following,
+    publicRepos: data.public_repos,
+  };
+}
+
+export type ContributionYear = {
+  commits: number;
+  pullRequests: number;
+  issues: number;
+  reviews: number;
+  reposWithCommits: number;
+  restricted: number;
+  total: number;
+  days: { date: string; count: number }[];
+  repos: { repo: string; commits: number; pullRequests: number }[];
+};
+
+const CONTRIBUTIONS_QUERY = /* GraphQL */ `
+  query ($from: DateTime!, $to: DateTime!) {
+    viewer {
+      contributionsCollection(from: $from, to: $to) {
+        totalCommitContributions
+        totalIssueContributions
+        totalPullRequestContributions
+        totalPullRequestReviewContributions
+        totalRepositoriesWithContributedCommits
+        restrictedContributionsCount
+        contributionCalendar {
+          totalContributions
+          weeks { contributionDays { date contributionCount } }
+        }
+        commitContributionsByRepository(maxRepositories: 100) {
+          repository { nameWithOwner }
+          contributions { totalCount }
+        }
+        pullRequestContributionsByRepository(maxRepositories: 100) {
+          repository { nameWithOwner }
+          contributions { totalCount }
+        }
+      }
+    }
+  }
+`;
+
+type ByRepo = { repository: { nameWithOwner: string }; contributions: { totalCount: number } }[];
+type ContributionsResponse = {
+  viewer: {
+    contributionsCollection: {
+      totalCommitContributions: number;
+      totalIssueContributions: number;
+      totalPullRequestContributions: number;
+      totalPullRequestReviewContributions: number;
+      totalRepositoriesWithContributedCommits: number;
+      restrictedContributionsCount: number;
+      contributionCalendar: { totalContributions: number; weeks: { contributionDays: { date: string; contributionCount: number }[] }[] };
+      commitContributionsByRepository: ByRepo;
+      pullRequestContributionsByRepository: ByRepo;
+    };
+  };
+};
+
+/**
+ * The token user's contributions between two instants (GraphQL; GitHub allows at most one year
+ * per query). Includes private contributions the token can see; others only in `restricted`.
+ */
+export async function fetchContributions(from: Date, to: Date): Promise<ContributionYear> {
+  const res = await getOctokit().graphql<ContributionsResponse>(CONTRIBUTIONS_QUERY, {
+    from: from.toISOString(),
+    to: to.toISOString(),
+  });
+  const c = res.viewer.contributionsCollection;
+  const repos = new Map<string, { repo: string; commits: number; pullRequests: number }>();
+  const add = (list: ByRepo, key: "commits" | "pullRequests") => {
+    for (const r of list) {
+      const name = r.repository.nameWithOwner;
+      const cur = repos.get(name) ?? { repo: name, commits: 0, pullRequests: 0 };
+      cur[key] += r.contributions.totalCount;
+      repos.set(name, cur);
+    }
+  };
+  add(c.commitContributionsByRepository, "commits");
+  add(c.pullRequestContributionsByRepository, "pullRequests");
+  return {
+    commits: c.totalCommitContributions,
+    pullRequests: c.totalPullRequestContributions,
+    issues: c.totalIssueContributions,
+    reviews: c.totalPullRequestReviewContributions,
+    reposWithCommits: c.totalRepositoriesWithContributedCommits,
+    restricted: c.restrictedContributionsCount,
+    total: c.contributionCalendar.totalContributions,
+    days: c.contributionCalendar.weeks.flatMap((w) => w.contributionDays.map((d) => ({ date: d.date, count: d.contributionCount }))),
+    repos: [...repos.values()],
+  };
+}

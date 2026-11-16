@@ -1,5 +1,5 @@
 import { unstable_cache } from "next/cache";
-import { fetchCommitActivity, fetchLanguages } from "./github";
+import { fetchCodeFrequency, fetchCommitActivity, fetchLanguages } from "./github";
 
 /**
  * Cached wrappers for data the repo page fetches live from GitHub (not stored in the DB).
@@ -36,6 +36,31 @@ export async function getLanguages(owner: string, repo: string): Promise<Record<
 export async function getCommitActivity(owner: string, repo: string) {
   try {
     return await cachedCommitActivity(owner, repo);
+  } catch {
+    return [];
+  }
+}
+
+const cachedCodeFrequency = unstable_cache(
+  async (owner: string, repo: string) => {
+    try {
+      const weeks = await fetchCodeFrequency(owner, repo);
+      if (weeks === null) throw new NotReady(); // 202: still computing — don't cache
+      return weeks;
+    } catch (e) {
+      // 422: GitHub doesn't compute this for repos with 10,000+ commits — cache the empty answer
+      if ((e as { status?: unknown } | null)?.status === 422) return [];
+      throw e;
+    }
+  },
+  ["gh-code-frequency"],
+  { revalidate: 6 * HOUR },
+);
+
+/** Weekly [week, additions, deletions] over the repo's history; [] while GitHub computes it or on failure. */
+export async function getCodeFrequency(owner: string, repo: string): Promise<number[][]> {
+  try {
+    return await cachedCodeFrequency(owner, repo);
   } catch {
     return [];
   }

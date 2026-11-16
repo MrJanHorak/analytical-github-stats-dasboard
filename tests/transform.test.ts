@@ -1,16 +1,20 @@
 import { describe, expect, it } from "vitest";
 import { compact, renderBadge } from "@/lib/badge";
 import {
+  aggregateContributedRepos,
   aggregateLanguages,
   bucket,
+  contributionStreaks,
   crossedMilestones,
   cumulativeByDay,
   dayRange,
   detectSpike,
   fillDaily,
+  heatmapWeeks,
   joinSeries,
   likelyAutomated,
   mergeTraffic,
+  monthlyCodeFrequency,
   pctChange,
   pivotReferrers,
   toCsv,
@@ -206,5 +210,60 @@ describe("likelyAutomated", () => {
     expect(likelyAutomated({ views: 0, clones: 5 })).toBe(false);
     expect(likelyAutomated({ views: 200, clones: 40 })).toBe(false);
     expect(likelyAutomated({ views: 10, clones: 20 })).toBe(false);
+  });
+});
+
+describe("contributionStreaks", () => {
+  const d = (date: string, count = 1) => ({ date, count });
+  it("finds the longest run and a current streak that may not include today yet", () => {
+    const days = [d("2026-01-01"), d("2026-01-02"), d("2026-01-03"), d("2026-01-04", 0), d("2026-01-09"), d("2026-01-10")];
+    expect(contributionStreaks(days, "2026-01-11")).toEqual({ current: 2, longest: 3, longestEnd: "2026-01-03" });
+    expect(contributionStreaks(days, "2026-01-10")).toMatchObject({ current: 2 });
+    expect(contributionStreaks(days, "2026-01-12")).toMatchObject({ current: 0 });
+    expect(contributionStreaks([], "2026-01-12")).toEqual({ current: 0, longest: 0, longestEnd: null });
+  });
+  it("crosses month and year boundaries", () => {
+    expect(contributionStreaks([d("2025-12-31"), d("2026-01-01")], "2026-01-01")).toMatchObject({ current: 2, longest: 2 });
+  });
+});
+
+describe("heatmapWeeks", () => {
+  it("lays out Sunday-first weeks ending with the week of `until`, with quartile levels", () => {
+    // 2026-11-15 is a Sunday
+    const weeks = heatmapWeeks([{ date: "2026-11-15", count: 8 }, { date: "2026-11-09", count: 2 }, { date: "2026-11-10", count: 7 }], "2026-11-15", 2);
+    expect(weeks).toHaveLength(2);
+    expect(weeks[0][0]!.date).toBe("2026-11-08");
+    expect(weeks[0].map((c) => c!.level)).toEqual([0, 1, 4, 0, 0, 0, 0]);
+    expect(weeks[1][0]).toEqual({ date: "2026-11-15", count: 8, level: 4 });
+    expect(weeks[1].slice(1)).toEqual([null, null, null, null, null, null]); // the future
+  });
+});
+
+describe("aggregateContributedRepos", () => {
+  it("sums years per repo, flags your own repos and sorts busiest first", () => {
+    const out = aggregateContributedRepos(
+      [
+        { repo: "jan/a", commits: 5, pullRequests: 0 },
+        { repo: "other/b", commits: 2, pullRequests: 9 },
+        { repo: "jan/a", commits: 1, pullRequests: 1 },
+      ],
+      "Jan",
+    );
+    expect(out).toEqual([
+      { repo: "other/b", commits: 2, pullRequests: 9, own: false },
+      { repo: "jan/a", commits: 6, pullRequests: 1, own: true },
+    ]);
+  });
+});
+
+describe("monthlyCodeFrequency", () => {
+  it("buckets weeks into months with a running net total", () => {
+    const jan5 = Date.UTC(2026, 0, 4) / 1000;
+    const jan12 = Date.UTC(2026, 0, 11) / 1000;
+    const feb1 = Date.UTC(2026, 1, 1) / 1000;
+    expect(monthlyCodeFrequency([[jan5, 100, -10], [jan12, 50, 0], [feb1, 5, -45]])).toEqual([
+      { date: "2026-01-01", additions: 150, deletions: 10, net: 140 },
+      { date: "2026-02-01", additions: 5, deletions: 45, net: 100 },
+    ]);
   });
 });

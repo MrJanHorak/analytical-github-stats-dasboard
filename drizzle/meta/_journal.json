@@ -43,6 +43,13 @@
       "when": 1794802713795,
       "tag": "0005_tarball_loc",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1794803065076,
+      "tag": "0006_contributions",
+      "breakpoints": true
     }
   ]
 }

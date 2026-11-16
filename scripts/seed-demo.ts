@@ -6,7 +6,7 @@ import { eq, inArray, sql } from "drizzle-orm";
 import { getDb, schema } from "../src/lib/db";
 import { daysAgo, isoDay } from "../src/lib/utils";
 
-const { alerts, annotations, repos, repoLanguages, repoLoc, repoSnapshots, trafficDaily, trafficWindows, referrers, popularPaths, releaseAssets, starEvents, forkEvents, syncRuns } =
+const { alerts, annotations, contributionDays, contributionRepos, contributionYears, profileSnapshots, repos, repoLanguages, repoLoc, repoSnapshots, trafficDaily, trafficWindows, referrers, popularPaths, releaseAssets, starEvents, forkEvents, syncRuns } =
   schema;
 
 // Deterministic PRNG so screenshots are stable
@@ -192,6 +192,53 @@ async function main() {
     { repoId: top, date: daysAgo(29), kind: "stars_burst", value: 23, message: `demo/${DEMO[0].name}: +23 stars on ${daysAgo(29)}` },
     { repoId: ids[1], date: daysAgo(6), kind: "stars_milestone_200", value: 200, message: `demo/${DEMO[1].name} reached 200 stars ⭐` },
   ]);
+
+  // Your activity (/me) for a "demo" account created three years ago
+  for (const t of [contributionDays, contributionYears, contributionRepos, profileSnapshots]) await db.delete(t).where(eq(t.login, "demo"));
+  const thisYear = new Date().getUTCFullYear();
+  const days: { login: string; date: string; count: number }[] = [];
+  for (let back = 0; isoDay(daysAgo(back)) >= `${thisYear - 3}-03-01`; back++) {
+    const date = daysAgo(back);
+    const weekday = new Date(date + "T00:00:00Z").getUTCDay() % 6 !== 0;
+    // An 8-day current streak (8 days ago off), then a weekday-heavy pattern
+    const busy = back <= 8 ? back < 8 : rand() < (weekday ? 0.78 : 0.35);
+    days.push({ login: "demo", date, count: busy ? int(1, weekday ? 14 : 5) : 0 });
+  }
+  await db.insert(contributionDays).values(days);
+  for (let year = thisYear - 3; year <= thisYear; year++) {
+    const total = days.filter((d) => d.date.startsWith(`${year}-`)).reduce((a, d) => a + d.count, 0);
+    const prs = Math.round(total * 0.08);
+    const issues = Math.round(total * 0.05);
+    const reviews = Math.round(total * 0.04);
+    await db.insert(contributionYears).values({
+      login: "demo",
+      year,
+      commits: total - prs - issues - reviews,
+      pullRequests: prs,
+      issues,
+      reviews,
+      reposWithCommits: 4 + (year - thisYear + 3) * 2,
+      restricted: 0,
+      total,
+      syncedAt: new Date(),
+    });
+    const repoShare = [...DEMO.map((d) => `demo/${d.name}`), "vercel/next.js", "drizzle-team/drizzle-orm"];
+    await db.insert(contributionRepos).values(
+      repoShare.map((repo, k) => ({
+        login: "demo",
+        year,
+        repo,
+        commits: repo.startsWith("demo/") ? Math.round(((total - prs) * 0.9) / (k + 2)) : int(0, 6),
+        pullRequests: repo.startsWith("demo/") ? int(0, 4) : int(1, 5),
+      })),
+    );
+  }
+  await db.insert(profileSnapshots).values(
+    Array.from({ length: DAYS }, (_, k) => {
+      const back = DAYS - 1 - k;
+      return { login: "demo", date: daysAgo(back), followers: 140 + Math.round(k * 0.35) + (back < 31 ? 9 : 0), following: 61, publicRepos: DEMO.length };
+    }),
+  );
 
   await db.insert(syncRuns).values({ finishedAt: new Date(), reposSynced: DEMO.length });
   console.log(`Seeded ${DEMO.length} demo repos with ${DAYS} days of traffic.`);

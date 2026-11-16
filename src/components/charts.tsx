@@ -25,6 +25,7 @@ const tooltip = {
   labelStyle: { color: "#a1a1aa" },
 } as const;
 
+const shortMonth = (d: string) => new Date(d + "T00:00:00Z").toLocaleDateString("en-US", { month: "short", year: "numeric", timeZone: "UTC" });
 const shortDate = (d: string) => new Date(d + "T00:00:00Z").toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
 
 export function TimeSeriesChart({
@@ -34,6 +35,7 @@ export function TimeSeriesChart({
   height = 260,
   emptyText = "No data yet — run a sync.",
   markers = [],
+  monthly = false,
 }: {
   data: Record<string, unknown>[];
   series: Series[];
@@ -42,7 +44,10 @@ export function TimeSeriesChart({
   emptyText?: string;
   /** Vertical reference lines (notes, alerts); only drawn for dates present in `data` */
   markers?: Marker[];
+  /** Data points are months ("YYYY-MM-01"): label the axis "Jan 2026" */
+  monthly?: boolean;
 }) {
+  const fmtDate = monthly ? shortMonth : shortDate;
   if (!data.length) {
     return <div className="flex h-40 items-center justify-center text-sm text-zinc-500">{emptyText}</div>;
   }
@@ -68,13 +73,13 @@ export function TimeSeriesChart({
     <ResponsiveContainer width="100%" height={height}>
       <Chart data={data} margin={{ top: 8, right: 8, left: -16, bottom: 0 }}>
         <CartesianGrid stroke="#27272a" vertical={false} />
-        <XAxis dataKey="date" tickFormatter={shortDate} {...axis} minTickGap={24} />
+        <XAxis dataKey="date" tickFormatter={fmtDate} {...axis} minTickGap={24} />
         <YAxis {...axis} allowDecimals={false} />
         <Tooltip
           {...tooltip}
           labelFormatter={(l) => {
             const note = markerText(String(l));
-            return note ? `${shortDate(String(l))} — ${note}` : shortDate(String(l));
+            return note ? `${fmtDate(String(l))} — ${note}` : fmtDate(String(l));
           }}
         />
         <Legend wrapperStyle={{ fontSize: 12 }} />

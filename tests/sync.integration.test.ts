@@ -12,8 +12,9 @@ import { pack } from "tar-stream";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { schema, setDbForTesting } from "@/lib/db";
 import * as gh from "@/lib/github";
-import { getExportData, getOverview, getRepoDetail } from "@/lib/queries";
+import { getExportData, getMe, getOverview, getRepoDetail } from "@/lib/queries";
 import { runSync } from "@/lib/sync";
+import { syncContributions, yearsToFetch } from "@/lib/sync-contributions";
 import { toCsv } from "@/lib/transform";
 import { daysAgo, isoDay } from "@/lib/utils";
 
@@ -27,6 +28,8 @@ vi.mock("@/lib/github", () => ({
   fetchBranchSha: vi.fn(),
   fetchTarball: vi.fn(),
   fetchCommitActivity: vi.fn(),
+  fetchViewer: vi.fn(),
+  fetchContributions: vi.fn(),
 }));
 const m = vi.mocked(gh);
 
@@ -38,6 +41,27 @@ async function tarball(files: Record<string, string>) {
   const chunks: Buffer[] = [];
   for await (const c of p) chunks.push(c as Buffer);
   return Readable.from([gzipSync(Buffer.concat(chunks))]);
+}
+/** A year of contributions: one commit-day on 1 Feb and 2 Feb, two repos. */
+function contributions(year: number, commits = 2) {
+  return {
+    commits,
+    pullRequests: 1,
+    issues: 3,
+    reviews: 4,
+    reposWithCommits: 2,
+    restricted: 0,
+    total: commits + 8,
+    days: [
+      { date: `${year - 1}-12-31`, count: 99 }, // calendar weeks can spill into the previous year — ignored
+      { date: `${year}-02-01`, count: 1 },
+      { date: `${year}-02-02`, count: 1 },
+    ],
+    repos: [
+      { repo: "jan/alpha", commits, pullRequests: 0 },
+      { repo: "someone/lib", commits: 0, pullRequests: 1 },
+    ],
+  };
 }
 const lines = (n: number) => "x();\n\n".repeat(n); // n non-blank lines (+ n blank ones)
 
@@ -110,6 +134,8 @@ beforeEach(() => {
     { forkId: 500, fullName: "someone/alpha", owner: "someone", stars: 1, createdAt: ts(5) },
   ]);
   m.fetchLanguages.mockResolvedValue({ TypeScript: 9000, CSS: 1000 });
+  m.fetchViewer.mockResolvedValue({ login: "jan", createdAt: `${new Date().getUTCFullYear()}-01-05T00:00:00Z`, followers: 10, following: 3, publicRepos: 2 });
+  m.fetchContributions.mockResolvedValue(contributions(new Date().getUTCFullYear()));
   m.fetchBranchSha.mockResolvedValue("sha-1");
   m.fetchTarball.mockImplementation(() =>
     tarball({ "src/a.ts": lines(80), "src/b.css": lines(20), "package-lock.json": lines(5000), "README.md": lines(50) }),
@@ -369,5 +395,63 @@ describe("code stats", () => {
     expect(m.fetchTarball).not.toHaveBeenCalled();
     const big = await pg.query<{ lines_of_code: number | null }>("select lines_of_code from repos where id = 1");
     expect(big.rows[0].lines_of_code).toBeNull();
+  });
+});
+
+describe("contributions", () => {
+  it("works out which years still need fetching", () => {
+    const created = new Date("2023-06-01T00:00:00Z");
+    const now = new Date("2026-03-01T00:00:00Z");
+    expect(yearsToFetch(created, now, new Map())).toEqual([2026, 2025, 2024, 2023]);
+    const synced = new Map([
+      [2023, new Date("2024-02-01T00:00:00Z")], // final
+      [2024, new Date("2024-12-30T00:00:00Z")], // synced before the year ended → refetch once
+      [2025, new Date("2026-01-10T00:00:00Z")], // final
+      [2026, new Date("2026-02-28T00:00:00Z")], // current year → always
+    ]);
+    expect(yearsToFetch(created, now, synced)).toEqual([2026, 2024]);
+  });
+
+  it("backfills every year once, then only the current one, and powers /me", async () => {
+    await pg.exec("delete from contribution_years; delete from contribution_days; delete from contribution_repos; delete from profile_snapshots");
+    m.fetchViewer.mockResolvedValue({ login: "jan", createdAt: "2024-03-10T00:00:00Z", followers: 12, following: 3, publicRepos: 9 });
+    m.fetchContributions.mockImplementation(async (from: Date) => contributions(from.getUTCFullYear(), from.getUTCFullYear() - 2020));
+    const now = new Date("2026-02-03T12:00:00Z");
+
+    const first = await syncContributions({ now });
+    expect(first).toEqual({ login: "jan", yearsFetched: 3, yearsPending: 0 });
+    // The first year starts at account creation, the current one ends now
+    const calls = m.fetchContributions.mock.calls.map(([f, t]) => [f.toISOString(), t.toISOString()]);
+    expect(calls).toContainEqual(["2024-03-10T00:00:00.000Z", "2024-12-31T23:59:59.000Z"]);
+    expect(calls).toContainEqual(["2026-01-01T00:00:00.000Z", "2026-02-03T12:00:00.000Z"]);
+    const days = await pg.query<{ n: number }>("select count(*)::int as n from contribution_days where count = 99");
+    expect(days.rows[0].n).toBe(0);
+
+    m.fetchContributions.mockClear();
+    const second = await syncContributions({ now: new Date("2026-02-04T12:00:00Z") });
+    expect(second.yearsFetched).toBe(1);
+    expect(m.fetchContributions.mock.calls[0][0].toISOString()).toBe("2026-01-01T00:00:00.000Z");
+
+    // Out of time → nothing fetched, reported as pending
+    expect(await syncContributions({ now, outOfTime: () => true })).toMatchObject({ yearsFetched: 0, yearsPending: 1 });
+
+    const me = (await getMe(isoDay(now)))!;
+    expect(me.login).toBe("jan");
+    // commits per year = year - 2020 → 4 + 5 + 6
+    expect(me.totals).toMatchObject({ commits: 15, pullRequests: 3, issues: 9, reviews: 12, total: 39 });
+    expect(me.years.map((y) => y.year)).toEqual([2024, 2025, 2026]);
+    expect(me.reposContributedTo).toBe(2);
+    expect(me.topRepos[0]).toMatchObject({ repo: "jan/alpha", commits: 15, own: true });
+    expect(me.streaks).toMatchObject({ current: 2, longest: 2 }); // 2026-02-01 and -02, "today" is 02-03
+    expect(me.followers).toMatchObject({ current: 12 });
+    expect(me.heatmap.at(-1)!.some((c) => c?.date === "2026-02-02" && c.count === 1)).toBe(true);
+  });
+
+  it("reports a failure without breaking the rest of the sync", async () => {
+    m.fetchViewer.mockRejectedValue(new Error("Bad credentials"));
+    const r = await runSync();
+    expect(r.errors).toEqual([{ repo: "contributions", error: "Bad credentials" }]);
+    expect(r.reposSynced).toBe(1);
+    expect(r.contributionYearsPending).toBeNull();
   });
 });

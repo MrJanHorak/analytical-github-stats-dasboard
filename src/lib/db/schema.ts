@@ -213,3 +213,62 @@ export const syncRuns = pgTable("sync_runs", {
   reposSynced: integer("repos_synced").notNull().default(0),
   error: text("error"),
 });
+
+// --- Your own activity (the token's user), for /me ----------------------------------------------
+
+/** Daily contribution counts from GitHub's contribution calendar, back to account creation. */
+export const contributionDays = pgTable(
+  "contribution_days",
+  {
+    login: text("login").notNull(),
+    date: date("date").notNull(),
+    count: integer("count").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.login, t.date] })],
+);
+
+/** Contribution totals per calendar year (GitHub only answers one year per query). */
+export const contributionYears = pgTable(
+  "contribution_years",
+  {
+    login: text("login").notNull(),
+    year: integer("year").notNull(),
+    commits: integer("commits").notNull(),
+    pullRequests: integer("pull_requests").notNull(),
+    issues: integer("issues").notNull(),
+    reviews: integer("reviews").notNull(),
+    reposWithCommits: integer("repos_with_commits").notNull(),
+    /** Contributions in private repos the token can't see (counted, not itemised) */
+    restricted: integer("restricted").notNull(),
+    total: integer("total").notNull(),
+    /** A year is final once it has been synced after it ended */
+    syncedAt: timestamp("synced_at", { withTimezone: true }).notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.login, t.year] })],
+);
+
+/** Commits and pull requests per repository per year (any repo you contributed to, not just your own). */
+export const contributionRepos = pgTable(
+  "contribution_repos",
+  {
+    login: text("login").notNull(),
+    year: integer("year").notNull(),
+    repo: text("repo").notNull(), // owner/name
+    commits: integer("commits").notNull(),
+    pullRequests: integer("pull_requests").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.login, t.year, t.repo] })],
+);
+
+/** Daily followers / following snapshot → growth chart. */
+export const profileSnapshots = pgTable(
+  "profile_snapshots",
+  {
+    login: text("login").notNull(),
+    date: date("date").notNull(),
+    followers: integer("followers").notNull(),
+    following: integer("following").notNull(),
+    publicRepos: integer("public_repos").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.login, t.date] })],
+);

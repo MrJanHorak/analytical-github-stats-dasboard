@@ -184,3 +184,87 @@ export const AUTOMATED_MIN_CLONES = 10;
 export function likelyAutomated({ views, clones }: { views: number; clones: number }): boolean {
   return clones >= AUTOMATED_MIN_CLONES && clones > 2 * views;
 }
+
+// --- Contributions (/me) -------------------------------------------------------------------------
+
+const addDays = (day: string, n: number) => {
+  const d = new Date(day + "T00:00:00Z");
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+};
+
+/**
+ * Current and longest streak of days with at least one contribution. A streak still counts as
+ * current if today has nothing yet but yesterday did (the day isn't over).
+ */
+export function contributionStreaks(days: { date: string; count: number }[], today: string) {
+  const active = new Set(days.filter((d) => d.count > 0).map((d) => d.date));
+  let longest = 0;
+  let longestEnd: string | null = null;
+  for (const date of [...active].sort()) {
+    if (active.has(addDays(date, -1))) continue; // not the start of a run
+    let len = 1;
+    while (active.has(addDays(date, len))) len++;
+    if (len > longest) {
+      longest = len;
+      longestEnd = addDays(date, len - 1);
+    }
+  }
+  let cursor = active.has(today) ? today : addDays(today, -1);
+  let current = 0;
+  while (active.has(cursor)) {
+    current++;
+    cursor = addDays(cursor, -1);
+  }
+  return { current, longest, longestEnd };
+}
+
+export type HeatCell = { date: string; count: number; level: 0 | 1 | 2 | 3 | 4 } | null;
+
+/**
+ * GitHub-style heatmap: `weeks` columns of 7 days (Sunday first) ending with the week of `until`.
+ * Days after `until` are null. Levels split the non-zero counts into quartiles of the busiest day.
+ */
+export function heatmapWeeks(days: { date: string; count: number }[], until: string, weeks = 53): HeatCell[][] {
+  const by = new Map(days.map((d) => [d.date, d.count]));
+  const end = new Date(until + "T00:00:00Z");
+  const start = addDays(until, -end.getUTCDay() - (weeks - 1) * 7);
+  const cols: { date: string; count: number }[][] = [];
+  for (let w = 0; w < weeks; w++) {
+    cols.push(Array.from({ length: 7 }, (_, d) => {
+      const date = addDays(start, w * 7 + d);
+      return { date, count: by.get(date) ?? 0 };
+    }));
+  }
+  const max = Math.max(0, ...cols.flat().filter((c) => c.date <= until).map((c) => c.count));
+  const level = (n: number): 0 | 1 | 2 | 3 | 4 => (n <= 0 || !max ? 0 : (Math.min(4, Math.ceil((n / max) * 4)) as 1 | 2 | 3 | 4));
+  return cols.map((col) => col.map((c) => (c.date > until ? null : { ...c, level: level(c.count) })));
+}
+
+/** Sum per-year repo rows into all-time totals per repo, busiest first. */
+export function aggregateContributedRepos(rows: { repo: string; commits: number; pullRequests: number }[], login: string) {
+  const by = new Map<string, { repo: string; commits: number; pullRequests: number; own: boolean }>();
+  for (const r of rows) {
+    const cur = by.get(r.repo) ?? { repo: r.repo, commits: 0, pullRequests: 0, own: r.repo.split("/")[0].toLowerCase() === login.toLowerCase() };
+    cur.commits += r.commits;
+    cur.pullRequests += r.pullRequests;
+    by.set(r.repo, cur);
+  }
+  return [...by.values()].sort((a, b) => b.commits + b.pullRequests - (a.commits + a.pullRequests) || a.repo.localeCompare(b.repo));
+}
+
+/** Weekly [unix week, additions, deletions] → monthly totals with a running net line count. */
+export function monthlyCodeFrequency(weeks: number[][]) {
+  const by = new Map<string, { date: string; additions: number; deletions: number }>();
+  for (const [ts, add = 0, del = 0] of weeks) {
+    const date = new Date(ts * 1000).toISOString().slice(0, 7) + "-01";
+    const cur = by.get(date) ?? { date, additions: 0, deletions: 0 };
+    cur.additions += add;
+    cur.deletions += Math.abs(del);
+    by.set(date, cur);
+  }
+  let net = 0;
+  return [...by.values()]
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .map((m) => ({ ...m, net: (net += m.additions - m.deletions) }));
+}

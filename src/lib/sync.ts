@@ -12,6 +12,7 @@ import {
   listOwnedRepos,
 } from "./github";
 import { countTarball } from "./loc";
+import { syncContributions } from "./sync-contributions";
 import { mergeTraffic } from "./transform";
 import { isoDay, mapLimit } from "./utils";
 
@@ -41,6 +42,8 @@ export type SyncResult = {
   historyPending: number;
   /** Repos whose languages / lines of code still need (re)computing next run (time budget ran out) */
   codeStatsPending: number;
+  /** Years of your contribution history still to backfill (time budget); null if it couldn't be fetched */
+  contributionYearsPending: number | null;
   /** New alerts recorded this run (spikes, star bursts, milestones) */
   alertsCreated: number;
   /**
@@ -78,6 +81,7 @@ export async function runSync(opts: SyncOptions = {}): Promise<SyncResult> {
   let historyPending = 0;
   const starHistoryUnavailable: string[] = [];
   let codeStatsPending = 0;
+  let contributionYearsPending: number | null = null;
 
   try {
     const owned = await listOwnedRepos();
@@ -103,6 +107,13 @@ export async function runSync(opts: SyncOptions = {}): Promise<SyncResult> {
         }
       },
     );
+
+    // Phase 1b — your own contributions + followers (cheap after the one-time backfill).
+    try {
+      contributionYearsPending = (await syncContributions({ outOfTime })).yearsPending;
+    } catch (e) {
+      errors.push({ repo: "contributions", error: errMsg(e) });
+    }
 
     // Phase 2 — star/fork history: only for repos whose count moved (keeps API usage low).
     // Smallest first, so a big first-time backfill can't starve everything else.
@@ -162,7 +173,7 @@ export async function runSync(opts: SyncOptions = {}): Promise<SyncResult> {
     })
     .where(eq(syncRuns.id, run.id));
 
-  return { reposSynced, historyPending, codeStatsPending, alertsCreated, starHistoryUnavailable, errors };
+  return { reposSynced, historyPending, codeStatsPending, contributionYearsPending, alertsCreated, starHistoryUnavailable, errors };
 }
 
 /** repo id → pushed_at (ms) that languages/lines were last checked for, and the commit that was counted */

@@ -27,6 +27,9 @@ Run the collector at least every ~13 days; daily is recommended so you also get 
 | Default-branch commit | `GET /repos/{o}/{r}/branches/{branch}` | current | decides whether lines need recounting |
 | Repo tarball | `GET /repos/{o}/{r}/tarball/{sha}` | per commit | streamed and counted for lines of code (Contents: read) |
 | Lines added/deleted | `GET /repos/{o}/{r}/stats/code_frequency` | weekly, all history | for the M3.6 code-growth chart; 202 while computing, 422 for 10k+ commits |
+| Code frequency | (see above) | weekly | shown monthly as a code-growth chart on repo detail (live, cached 6h) |
+| Your contributions | GraphQL `viewer.contributionsCollection(from, to)` | one calendar year per query | commits, PRs, issues, reviews, daily calendar, commits/PRs per repo |
+| You | `GET /user` | current | followers / following → daily snapshot |
 | Commit activity | `GET /repos/{o}/{r}/stats/commit_activity` | weekly, 52 weeks | may return 202 while GitHub computes |
 | Stargazers with timestamps | `GET /repos/{o}/{r}/stargazers` (star+json) | full history | optional backfill for star history before the app existed |
 | Forks list | `GET /repos/{o}/{r}/forks` | full list | who forked, when |
@@ -68,6 +71,12 @@ fork_events      (repo_id, fork_id) PK — full_name, owner, stars, created_at
 alerts           (id, repo_id, date, kind) — message, value, baseline, notified_at   [unique (repo_id, date, kind)]
 annotations      (id, repo_id, date, label) — user notes shown as chart markers
 sync_runs        (id, started_at, finished_at, repos_synced, error)
+
+contribution_days  (login, date) PK — count            [daily calendar back to account creation]
+contribution_years (login, year) PK — commits, pull_requests, issues, reviews, repos_with_commits,
+                   restricted, total, synced_at        [a year is final once synced after it ended]
+contribution_repos (login, year, repo) PK — commits, pull_requests   [any repo, owner/name]
+profile_snapshots  (login, date) PK — followers, following, public_repos
 ```
 
 All writes are upserts, so re-running the sync is safe and the partial "today" row simply gets corrected next run.
@@ -79,14 +88,19 @@ All writes are upserts, so re-running the sync is safe and the partial "today" r
 3. **Traffic first** (concurrency 4, skipping archived repos): views, clones, 14-day totals, referrers, paths, releases → upsert. This always runs in full because GitHub deletes it after 14 days.
 4. **History second**: refetch stargazers/forks only for repos whose count changed, smallest first, until `SYNC_TIME_BUDGET_MS` (cron default 45s; CLI unlimited). Leftovers resume next run.
 5. **Code stats**: for repos pushed since they were last checked, refresh languages; then, if the default branch has a new commit, stream its tarball and count lines (`src/lib/loc.ts`: non-blank lines in code files; lock files, vendored/build dirs, minified, binary, >1 MB and `.gitattributes` linguist-generated/vendored/documentation files left out). Two at a time, same time budget as history; leftovers and failures resume next run. Repos over 500 MB are skipped.
-6. **Alerts**: judge yesterday against stored history → insert into `alerts` (idempotent) → post unnotified ones to `ALERT_WEBHOOK_URL`.
-7. Record a `sync_runs` row. About 5 requests per repo plus history refreshes, so 100 repos ≈ 500 requests, well under the 5,000/hour limit.
+6. **Your contributions** (right after traffic, `src/lib/sync-contributions.ts`): snapshot followers; fetch each calendar year that has never been stored or wasn't synced after it ended, newest first (first run = full backfill to account creation; afterwards just the current year). Same time budget.
+7. **Alerts**: judge yesterday against stored history → insert into `alerts` (idempotent) → post unnotified ones to `ALERT_WEBHOOK_URL`.
+8. Record a `sync_runs` row. About 5 requests per repo plus history refreshes, so 100 repos ≈ 500 requests, well under the 5,000/hour limit.
 
 ## 7. UI
 
 **Overview `/`**: range picker (7/14/30/90/365/all), KPI cards with % vs previous period and GitHub's deduplicated 14-day uniques, daily traffic chart with note markers, top referrers with sparklines, recent alerts, languages across all repos and lines of code in total, by language and largest repos (forks excluded), sortable/filterable repo table with sparklines, a lines column and a 🤖 likely-automated clones hint, CSV export.
 
 **Repo detail `/repo/[owner]/[name]`**: KPIs; views/clones charts with note and alert markers; stars & forks history from event timestamps; weekly commits (fetched live, cached); lines of code by language and GitHub's languages by bytes (stored by the sync); a likely-automated clones note; notes & alerts (add/delete notes); referrer trend; referrers and popular content; recent stargazers and forks; release downloads.
+
+**Your activity `/me`**: all-time commits / PRs / issues / reviews, contributions in the last 12 months, repos contributed to, current & longest streak, followers (+30d); GitHub-style heatmap; per-year table; top repos (yours link to their detail page, others marked external); followers chart.
+
+Repo detail also gets a **code growth** chart: lines added/deleted per month from `stats/code_frequency` (live, cached).
 
 **Badges `/api/badge/[owner]/[name]`**: public SVG for public repos only.
 
@@ -97,7 +111,7 @@ All writes are upserts, so re-running the sync is safe and the partial "today" r
 - **M2.5 ✅** time-budgeted sync (traffic first, history backfills resume next run), GitHub's deduplicated 14-day uniques, 1h cache for live languages/commit stats, referrer trend chart + sparklines, ESLint in CI.
 - **M3 ✅** alerts (views/clones spikes, star bursts, star milestones) stored per day, shown in the UI and posted to a Slack/Discord webhook; notes pinned to dates as chart markers; public SVG badges; screenshot script and a docs-drift test in CI.
 - **M3.5 ✅** languages across all repos, likely-automated clone hint (heuristic: many clones, few views); real lines of code counted from default-branch tarballs (lock files, vendored, generated, minified and non-code files excluded, `.gitattributes` honoured, recount only on a new default-branch commit), per language and in total.
-- **M3.6:** `/me` page — contribution totals via GraphQL `contributionsCollection` (year-by-year backfill to account creation, then current year only): commits, PRs, issues, reviews, repos contributed to; contribution heatmap + streaks; daily followers snapshots. Code-frequency (lines added/deleted per week) chart on repo detail.
+- **M3.6 ✅** `/me` page — contribution totals via GraphQL `contributionsCollection` (year-by-year backfill to account creation, then current year only): commits, PRs, issues, reviews, repos contributed to; contribution heatmap + streaks; daily followers snapshots. Code-frequency (lines added/deleted per week) chart on repo detail.
 - **M3.7:** community health checklist column (`/community/profile`); issue/PR flow (open vs closed, median time to close/merge, outside contributors); Actions CI pass rate + durations; optional Dependabot alert counts (extra permission).
 - **M4a:** release-date markers from GitHub releases; per-repo alert thresholds.
 - **M4b:** multi-user via a **GitHub App** (not an OAuth App — its `repo` scope would grant write access to every private repo) + Auth.js "Sign in with GitHub". Users install the App on chosen repos (Administration, Contents, Metadata: read); the cron uses installation tokens so syncs run with nobody logged in; every query scoped by owner; sync fanned out across installations.

@@ -7,8 +7,9 @@ import { LanguageBars } from "@/components/LanguageBars";
 import { StatCard } from "@/components/StatCard";
 import { isDbConfigured } from "@/lib/db";
 import { addNote, deleteNote } from "./actions";
-import { getCommitActivity, getLanguages } from "@/lib/github-cached";
+import { getCodeFrequency, getCommitActivity, getLanguages } from "@/lib/github-cached";
 import { getRepoDetail } from "@/lib/queries";
+import { monthlyCodeFrequency } from "@/lib/transform";
 import { fmt, isoDay, parseRange, rangeParam, rangeText } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
@@ -29,10 +30,12 @@ export default async function RepoPage({ params, searchParams }: Props) {
 
   // Live (not stored) extras, cached; failures shouldn't break the page.
   // Languages are stored by the sync; until it has run for this repo, fall back to a live fetch.
-  const [liveLanguages, commits] = await Promise.all([
+  const [liveLanguages, commits, codeFrequency] = await Promise.all([
     data.languages.length ? Promise.resolve(null) : getLanguages(owner, name),
     getCommitActivity(owner, name),
+    getCodeFrequency(owner, name),
   ]);
+  const codeMonths = monthlyCodeFrequency(codeFrequency);
   const languages = liveLanguages
     ? Object.entries(liveLanguages).map(([language, bytes]) => ({ language, bytes }))
     : data.languages;
@@ -129,6 +132,23 @@ export default async function RepoPage({ params, searchParams }: Props) {
             series={[{ key: "commits", label: "Commits", color: "#db61a2" }]} />
         </section>
       </div>
+
+      <section className="min-w-0 rounded-xl border border-zinc-800 p-4">
+        <h2 className="text-sm font-medium text-zinc-400">Code growth</h2>
+        <p className="mb-3 text-xs text-zinc-500">
+          Lines added and deleted per month over the repo&apos;s whole history (all files, lock files included) — GitHub
+          doesn&apos;t compute this for repos with 10,000+ commits
+        </p>
+        <TimeSeriesChart
+          data={codeMonths}
+          monthly
+          emptyText="GitHub is still computing code stats (or this repo has 10,000+ commits) — try again shortly."
+          series={[
+            { key: "additions", label: "Added", color: "#3fb950" },
+            { key: "deletions", label: "Deleted", color: "#f85149" },
+          ]}
+        />
+      </section>
 
       <section className="min-w-0 rounded-xl border border-zinc-800 p-4">
         <h2 className="mb-3 text-sm font-medium text-zinc-400">Notes &amp; alerts</h2>

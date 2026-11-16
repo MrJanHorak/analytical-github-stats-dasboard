@@ -3,8 +3,8 @@ export function isoDay(d: Date | string = new Date()) {
   return new Date(d).toISOString().slice(0, 10);
 }
 
-export function daysAgo(n: number) {
-  const d = new Date();
+export function daysAgo(n: number, from?: string) {
+  const d = from ? new Date(from + "T00:00:00Z") : new Date();
   d.setUTCDate(d.getUTCDate() - n);
   return isoDay(d);
 }

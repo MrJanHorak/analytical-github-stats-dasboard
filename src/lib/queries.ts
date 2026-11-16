@@ -1,10 +1,13 @@
 import { and, asc, desc, eq, gte, inArray, lt, sql } from "drizzle-orm";
 import { getDb, schema } from "./db";
 import {
+  aggregateContributedRepos,
   aggregateLanguages,
   bucket,
+  contributionStreaks,
   cumulativeByDay,
   fillDaily,
+  heatmapWeeks,
   joinSeries,
   likelyAutomated,
   pivotReferrers,
@@ -26,6 +29,10 @@ const {
   starEvents,
   forkEvents,
   syncRuns,
+  contributionDays,
+  contributionYears,
+  contributionRepos,
+  profileSnapshots,
 } = schema;
 
 type Totals = { views: number; viewUniques: number; clones: number; cloneUniques: number };
@@ -408,4 +415,67 @@ export async function getExportData(kind: "repos" | "daily", rangeDays: number) 
     .innerJoin(repos, eq(repos.id, trafficDaily.repoId))
     .where(gte(trafficDaily.date, since))
     .orderBy(asc(trafficDaily.date), asc(repos.fullName));
+}
+
+/** Your own activity for /me: contribution totals, heatmap, streaks, repos, followers. Null before the first sync. */
+export async function getMe(today = isoDay()) {
+  const db = getDb();
+  const [latest] = await db.select().from(profileSnapshots).orderBy(desc(profileSnapshots.date)).limit(1);
+  if (!latest) return null;
+  const login = latest.login;
+
+  const [years, repoRows, days, followerRows] = await Promise.all([
+    db.select().from(contributionYears).where(eq(contributionYears.login, login)).orderBy(asc(contributionYears.year)),
+    db
+      .select({ repo: contributionRepos.repo, commits: contributionRepos.commits, pullRequests: contributionRepos.pullRequests })
+      .from(contributionRepos)
+      .where(eq(contributionRepos.login, login)),
+    db
+      .select({ date: contributionDays.date, count: contributionDays.count })
+      .from(contributionDays)
+      .where(eq(contributionDays.login, login))
+      .orderBy(asc(contributionDays.date)),
+    db
+      .select({ date: profileSnapshots.date, followers: profileSnapshots.followers, following: profileSnapshots.following })
+      .from(profileSnapshots)
+      .where(eq(profileSnapshots.login, login))
+      .orderBy(asc(profileSnapshots.date)),
+  ]);
+
+  const sum = (k: "commits" | "pullRequests" | "issues" | "reviews" | "restricted" | "total") => years.reduce((a, y) => a + y[k], 0);
+  const repos = aggregateContributedRepos(repoRows, login);
+  const yearAgo = daysAgo(364, today);
+  const monthAgo = followerRows.find((f) => f.date >= daysAgo(30, today)) ?? followerRows[0];
+
+  return {
+    login,
+    since: years[0]?.year ?? null,
+    totals: {
+      commits: sum("commits"),
+      pullRequests: sum("pullRequests"),
+      issues: sum("issues"),
+      reviews: sum("reviews"),
+      restricted: sum("restricted"),
+      total: sum("total"),
+    },
+    years: years.map((y) => ({
+      year: y.year,
+      commits: y.commits,
+      pullRequests: y.pullRequests,
+      issues: y.issues,
+      reviews: y.reviews,
+      total: y.total,
+    })),
+    lastYear: days.filter((d) => d.date >= yearAgo && d.date <= today).reduce((a, d) => a + d.count, 0),
+    reposContributedTo: repos.length,
+    topRepos: repos.slice(0, 10),
+    streaks: contributionStreaks(days, today),
+    heatmap: heatmapWeeks(days.filter((d) => d.date >= daysAgo(380, today)), today),
+    followers: {
+      current: latest.followers,
+      following: latest.following,
+      delta30: latest.followers - (monthAgo?.followers ?? latest.followers),
+      history: followerRows,
+    },
+  };
 }

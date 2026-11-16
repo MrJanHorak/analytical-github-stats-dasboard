@@ -11,8 +11,9 @@ A self-hosted Next.js dashboard for **views, unique visitors, clones, referrers,
 | | |
 |---|---|
 | **Overview** | Totals with % change vs the previous period, language and lines-of-code totals, a 🤖 hint on clones that look automated, daily traffic chart, sortable/filterable repo table with sparklines, top referrers with trends, recent alerts, CSV export |
-| **Repo detail** | Views & clones (total vs unique), full star & fork history, recent stargazers and forks, referrer trend, popular content, languages, lines of code by language, likely-automated clone hint, weekly commits, release downloads |
+| **Repo detail** | Views & clones (total vs unique), full star & fork history, recent stargazers and forks, referrer trend, popular content, languages, lines of code by language, likely-automated clone hint, weekly commits, code growth (lines added/deleted per month), release downloads |
 | **Code** | Languages across all your repos (share of bytes, repos per language) and real lines of code per repo, per language and in total — counted from each repo's default branch with lock files, vendored, generated and non-code files left out, and recounted only when the default branch gets a new commit. Forks are left out of the totals |
+| **Your activity** | `/me`: your contributions in any repo, as GitHub counts them — all-time commits, pull requests, issues and reviews, a contribution heatmap with current and longest streak, totals per year, the repos you contribute to most (yours and others'), and follower growth |
 | **History** | Traffic is stored daily, so it outlives GitHub's 14-day limit. Star and fork history is rebuilt from GitHub's timestamps, back to the day each repo was created |
 | **Alerts** | Traffic spikes, star bursts and star milestones, shown in the app and optionally posted to Slack or Discord |
 | **Notes** | Pin notes like "Posted on Hacker News" to a date; they show as markers on the charts |
@@ -27,6 +28,10 @@ A self-hosted Next.js dashboard for **views, unique visitors, clones, referrers,
 <td width="50%"><b>Lines of code</b> — total, by language and largest repos<br><img src="docs/lines-of-code.png" alt="Lines of code"></td>
 </tr>
 </table>
+
+### Your activity
+
+![Your activity](docs/your-activity.png)
 
 ### Repo detail
 
@@ -46,6 +51,8 @@ A self-hosted Next.js dashboard for **views, unique visitors, clones, referrers,
 ## How it works
 
 GitHub's Traffic API only returns the last 14 days. A daily sync job (`/api/cron/sync`, or `npm run sync`) pulls everything and upserts it into Postgres, so your history keeps growing. The dashboard reads only from the database. After each sync, the alert check looks at yesterday's numbers (the last complete day) and posts anything new to your webhook.
+
+The sync also stores your own contribution history (one GraphQL query per calendar year — the first run backfills every year back to when your account was created, later runs refresh only the current year) and a daily snapshot of your followers.
 
 See [PLAN.md](./PLAN.md) for the architecture, data model and roadmap.
 
@@ -167,6 +174,7 @@ All variables are listed with comments in [`.env.example`](./.env.example).
 |---|---|---|
 | `/` | dashboard password | Overview (`?range=7\|14\|30\|90\|365\|all`) |
 | `/repo/:owner/:name` | dashboard password | Repo detail and notes |
+| `/me` | dashboard password | Your contributions, streaks and followers |
 | `/api/export` | dashboard password | CSV: `?kind=repos\|daily&range=…` |
 | `/api/cron/sync` | `Bearer CRON_SECRET` | Run the sync (Vercel Cron) |
 | `/api/badge/:owner/:name` | public (public repos only) | SVG badge |
