@@ -26,8 +26,7 @@ Run the collector at least every ~13 days; daily is recommended so you also get 
 | Languages | `GET /repos/{o}/{r}/languages` | current | bytes per language; stored when the repo is pushed |
 | Default-branch commit | `GET /repos/{o}/{r}/branches/{branch}` | current | decides whether lines need recounting |
 | Repo tarball | `GET /repos/{o}/{r}/tarball/{sha}` | per commit | streamed and counted for lines of code (Contents: read) |
-| Lines added/deleted | `GET /repos/{o}/{r}/stats/code_frequency` | weekly, all history | for the M3.6 code-growth chart; 202 while computing, 422 for 10k+ commits |
-| Code frequency | (see above) | weekly | shown monthly as a code-growth chart on repo detail (live, cached 6h) |
+| Lines added/deleted | `GET /repos/{o}/{r}/stats/code_frequency` | weekly, all history | shown monthly as the code-growth chart on repo detail (live, cached 6h); 202 while computing, 422 for 10k+ commits |
 | Your contributions | GraphQL `viewer.contributionsCollection(from, to)` | one calendar year per query | commits, PRs, issues, reviews, daily calendar, commits/PRs per repo |
 | You | `GET /user` | current | followers / following → daily snapshot |
 | Commit activity | `GET /repos/{o}/{r}/stats/commit_activity` | weekly, 52 weeks | may return 202 while GitHub computes |
@@ -111,7 +110,7 @@ Repo detail also gets a **code growth** chart: lines added/deleted per month fro
 - **M2.5 ✅** time-budgeted sync (traffic first, history backfills resume next run), GitHub's deduplicated 14-day uniques, 1h cache for live languages/commit stats, referrer trend chart + sparklines, ESLint in CI.
 - **M3 ✅** alerts (views/clones spikes, star bursts, star milestones) stored per day, shown in the UI and posted to a Slack/Discord webhook; notes pinned to dates as chart markers; public SVG badges; screenshot script and a docs-drift test in CI.
 - **M3.5 ✅** languages across all repos, likely-automated clone hint (heuristic: many clones, few views); real lines of code counted from default-branch tarballs (lock files, vendored, generated, minified and non-code files excluded, `.gitattributes` honoured, recount only on a new default-branch commit), per language and in total.
-- **M3.6 ✅** `/me` page — contribution totals via GraphQL `contributionsCollection` (year-by-year backfill to account creation, then current year only): commits, PRs, issues, reviews, repos contributed to; contribution heatmap + streaks; daily followers snapshots. Code-frequency (lines added/deleted per week) chart on repo detail.
+- **M3.6 ✅** `/me` page — contribution totals via GraphQL `contributionsCollection` (year-by-year backfill to account creation, then current year only): commits, PRs, issues, reviews, repos contributed to; contribution heatmap + streaks; daily followers snapshots. Code-growth chart (lines added/deleted per month, from code_frequency) on repo detail.
 - **M3.7:** community health checklist column (`/community/profile`); issue/PR flow (open vs closed, median time to close/merge, outside contributors); Actions CI pass rate + durations; optional Dependabot alert counts (extra permission).
 - **M4a:** release-date markers from GitHub releases; per-repo alert thresholds.
 - **M4b:** multi-user via a **GitHub App** (not an OAuth App — its `repo` scope would grant write access to every private repo) + Auth.js "Sign in with GitHub". Users install the App on chosen repos (Administration, Contents, Metadata: read); the cron uses installation tokens so syncs run with nobody logged in; every query scoped by owner; sync fanned out across installations.
