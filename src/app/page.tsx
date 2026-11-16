@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { CiPanel, IssueFlowPanel, SecurityCounts } from "@/components/Activity";
 import { FrameworksPanel } from "@/components/Frameworks";
+import { LocalTime } from "@/components/LocalTime";
 import { TimeSeriesChart } from "@/components/charts";
 import { RangePicker } from "@/components/RangePicker";
 import { RepoTable } from "@/components/RepoTable";
@@ -31,7 +32,7 @@ export default async function Overview({ searchParams }: { searchParams: Promise
         <div>
           <h1 className="text-2xl font-semibold">All repositories</h1>
           <p className="text-sm text-zinc-500">
-            Last sync: {data.lastRun?.finishedAt ? new Date(data.lastRun.finishedAt).toLocaleString() : "never"}
+            Last sync: {data.lastRun?.finishedAt ? <LocalTime iso={new Date(data.lastRun.finishedAt).toISOString()} /> : "never"}
             {range === 0 && <> · history since {data.since}</>}
           </p>
         </div>

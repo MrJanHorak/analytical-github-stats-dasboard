@@ -318,7 +318,7 @@ function PeopleList({
                 {i.label ?? i.login}
               </a>
               {i.extra && <span className="text-xs text-zinc-500">{i.extra}</span>}
-              <span className="ml-auto shrink-0 text-xs text-zinc-500">{new Date(i.at).toLocaleDateString()}</span>
+              <span className="ml-auto shrink-0 text-xs text-zinc-500">{new Date(i.at).toLocaleDateString("en-US", { timeZone: "UTC" })}</span>
             </li>
           ))}
         </ul>
