@@ -136,7 +136,8 @@ export function RepoTable({ repos, range, initialQuery = "" }: { repos: RepoRow[
                   {pct(r.ciPassRate)}
                 </td>
                 <td className="px-3 py-2 text-xs text-zinc-500">
-                  {r.pushedAt ? new Date(r.pushedAt).toLocaleDateString() : "—"}
+                  {/* Fixed locale + UTC so the server render and the browser's hydration agree */}
+                  {r.pushedAt ? new Date(r.pushedAt).toLocaleDateString("en-US", { timeZone: "UTC" }) : "—"}
                 </td>
               </tr>
             ))}
