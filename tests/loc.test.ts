@@ -6,7 +6,9 @@ import {
   attributesFor,
   countLines,
   countTarball,
+  countTodos,
   defaultSkipReason,
+  isTestPath,
   languageForPath,
   parseGitattributes,
   summarize,
@@ -177,5 +179,26 @@ describe("countTarball", () => {
 
   it("handles an empty repository", async () => {
     expect((await countTarball(await tarball({}))).nonBlank).toBe(0);
+  });
+});
+
+describe("test code and TODOs", () => {
+  it("recognises test files across languages", () => {
+    for (const p of ["src/a.test.ts", "src/__tests__/a.tsx", "tests/sync.ts", "e2e/login.spec.ts", "app/test_views.py", "pkg/x_test.go", "spec/user_spec.rb", "src/FooTest.java", "cypress/e2e/a.cy.js"])
+      expect(isTestPath(p), p).toBe(true);
+    for (const p of ["src/a.ts", "src/testing-utils.ts", "src/contest.ts", "latest/index.js"]) expect(isTestPath(p), p).toBe(false);
+  });
+  it("counts TODO / FIXME / HACK markers", () => {
+    expect(countTodos("// TODO: x\n// FIXME later\n/* HACK */ const TODOS = 1; // todo lowercase")).toBe(3);
+  });
+  it("totals test lines and TODOs in a tarball, after skips", async () => {
+    const s = await countTarball(
+      await tarball({
+        "src/a.ts": "export const a = 1; // TODO tidy\n",
+        "src/a.test.ts": "test('a', () => {});\nexpect(1).toBe(1);\n",
+        "node_modules/x/x.test.js": "// TODO vendored\n".repeat(50),
+      }),
+    );
+    expect(s).toMatchObject({ nonBlank: 3, testNonBlank: 2, todos: 1 });
   });
 });

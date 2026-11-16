@@ -14,12 +14,14 @@ import {
 import { countTarball } from "./loc";
 import { activityMarkers, syncRepoActivity } from "./sync-activity";
 import { syncContributions } from "./sync-contributions";
+import { syncPackageVersions } from "./sync-packages";
 import { mergeTraffic } from "./transform";
 import { isoDay, mapLimit } from "./utils";
 
 const {
   repos,
   repoLanguages,
+  codeSnapshots,
   repoFrameworks,
   repoLoc,
   repoSnapshots,
@@ -158,6 +160,14 @@ export async function runSync(opts: SyncOptions = {}): Promise<SyncResult> {
       }
     });
 
+    // Phase 3b — latest releases of the packages your frameworks come from (npm / PyPI, daily)
+    try {
+      const pv = await syncPackageVersions({ outOfTime });
+      for (const err of pv.errors.slice(0, 3)) errors.push({ repo: "package versions", error: err });
+    } catch (e) {
+      errors.push({ repo: "package versions", error: errMsg(e) });
+    }
+
     // Phase 4 — issues & PRs, Actions runs, Dependabot alerts, community health (incremental,
     // ~3 requests per repo per day). Your own active repos only; least recently synced first.
     const activityJobs = owned
@@ -236,9 +246,29 @@ async function syncCodeStats(r: OwnedRepo, countedSha: string | null) {
   const locRows = (summary?.languages ?? []).map((l) => ({ repoId: r.id, ...l }));
   if (locRows.length) await db.insert(repoLoc).values(locRows).onConflictDoNothing();
   await db.delete(repoFrameworks).where(eq(repoFrameworks.repoId, r.id));
-  const fwRows = (summary?.frameworks ?? []).map((f) => ({ repoId: r.id, framework: f.name, category: f.category, version: f.version }));
+  const fwRows = (summary?.frameworks ?? []).map((f) => ({
+    repoId: r.id,
+    framework: f.name,
+    category: f.category,
+    version: f.version,
+    package: f.package ?? null,
+    ecosystem: f.ecosystem ?? null,
+  }));
   if (fwRows.length) await db.insert(repoFrameworks).values(fwRows).onConflictDoNothing();
-  return markDone({ linesOfCode: summary?.nonBlank ?? 0, locCommitSha: sha });
+  const counts = { linesOfCode: summary?.nonBlank ?? 0, testLines: summary?.testNonBlank ?? 0, todoCount: summary?.todos ?? 0 };
+  await db
+    .insert(codeSnapshots)
+    .values({ repoId: r.id, date: isoDay(), ...counts, commitSha: sha })
+    .onConflictDoUpdate({
+      target: [codeSnapshots.repoId, codeSnapshots.date],
+      set: {
+        linesOfCode: sql.raw("excluded.lines_of_code"),
+        testLines: sql.raw("excluded.test_lines"),
+        todoCount: sql.raw("excluded.todo_count"),
+        commitSha: sql.raw("excluded.commit_sha"),
+      },
+    });
+  return markDone({ ...counts, locCommitSha: sha });
 }
 
 async function countBy(table: typeof starEvents | typeof forkEvents) {

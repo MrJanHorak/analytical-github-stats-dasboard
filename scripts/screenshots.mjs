@@ -40,6 +40,8 @@ await shoot("languages", "/?range=30", { section: "Languages across your repos" 
 await shoot("lines-of-code", "/?range=30", { section: "Lines of code" });
 await shoot("your-activity", "/me", { height: 1300 });
 await shoot("frameworks", "/?range=30", { section: "Frameworks & tools" });
+await shoot("code-health", "/?range=90", { section: "Code health" });
+await shoot("deployments", "/?range=90", { section: "Deployments" });
 await shoot("issues-prs", "/?range=90", { section: "Issues & pull requests" });
 await shoot("actions-ci", "/?range=90", { section: "GitHub Actions" });
 await shoot("community-health", `/repo/${REPO}?range=90`, { section: "Community health" });

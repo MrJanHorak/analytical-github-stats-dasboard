@@ -38,6 +38,10 @@ export const repos = pgTable("repos", {
   codeStatsPushedAt: timestamp("code_stats_pushed_at", { withTimezone: true }),
   /** Default-branch commit the line count is for; a push to another branch doesn't trigger a recount. */
   locCommitSha: text("loc_commit_sha"),
+  /** Non-blank lines in test files (part of linesOfCode) */
+  testLines: integer("test_lines"),
+  /** TODO / FIXME / HACK markers in counted code */
+  todoCount: integer("todo_count"),
 });
 
 /** Bytes per language (GitHub Linguist — skips vendored and generated files). Current state, replaced on refresh. */
@@ -73,6 +77,9 @@ export const repoFrameworks = pgTable(
     category: text("category").notNull(),
     /** Declared version (highest across manifests), null when not pinned or detected from a config file */
     version: text("version"),
+    /** Dependency that matched, for comparing with the latest release (npm / pypi only) */
+    package: text("package"),
+    ecosystem: text("ecosystem"),
   },
   (t) => [primaryKey({ columns: [t.repoId, t.framework] })],
 );
@@ -347,9 +354,58 @@ export const repoHealth = pgTable("repo_health", {
   dependabotMedium: integer("dependabot_medium"),
   dependabotLow: integer("dependabot_low"),
   actionsAvailable: boolean("actions_available"),
+  /** false when the token can't read deployments (Deployments: Read-only) */
+  deploymentsAvailable: boolean("deployments_available"),
+  deploymentsSyncedAt: timestamp("deployments_synced_at", { withTimezone: true }),
   /** false when the token can't read issues/PRs (private repos need Issues + Pull requests: Read-only) */
   issuesAvailable: boolean("issues_available"),
   issuesSyncedAt: timestamp("issues_synced_at", { withTimezone: true }),
   runsSyncedAt: timestamp("runs_synced_at", { withTimezone: true }),
   activitySyncedAt: timestamp("activity_synced_at", { withTimezone: true }),
 });
+
+// --- Code health (M3.9) -------------------------------------------------------------------------
+
+/** One row per repo per day a recount happened: lines over time (history starts with this feature). */
+export const codeSnapshots = pgTable(
+  "code_snapshots",
+  {
+    repoId: repoId(),
+    date: date("date").notNull(),
+    linesOfCode: integer("lines_of_code").notNull(),
+    testLines: integer("test_lines").notNull(),
+    todoCount: integer("todo_count").notNull(),
+    commitSha: text("commit_sha"),
+  },
+  (t) => [primaryKey({ columns: [t.repoId, t.date] })],
+);
+
+/** Deployments reported to GitHub (Vercel, Netlify, GitHub Pages, Actions environments, …). */
+export const deployments = pgTable(
+  "deployments",
+  {
+    repoId: repoId(),
+    deploymentId: bigint("deployment_id", { mode: "number" }).notNull(),
+    environment: text("environment").notNull(),
+    /** Production-like environment (production / prod / github-pages / main) */
+    production: boolean("production").notNull(),
+    ref: text("ref"),
+    creator: text("creator"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+    /** Latest status (success, failure, error, inactive, in_progress, …); null until fetched */
+    state: text("state"),
+  },
+  (t) => [primaryKey({ columns: [t.repoId, t.deploymentId] }), index("deployments_created_idx").on(t.createdAt)],
+);
+
+/** Latest released version of packages your frameworks come from (npm / PyPI), refreshed daily. */
+export const packageVersions = pgTable(
+  "package_versions",
+  {
+    ecosystem: text("ecosystem").notNull(),
+    package: text("package").notNull(),
+    latest: text("latest"),
+    checkedAt: timestamp("checked_at", { withTimezone: true }).notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.ecosystem, t.package] })],
+);

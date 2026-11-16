@@ -12,6 +12,7 @@ import { pack } from "tar-stream";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { schema, setDbForTesting } from "@/lib/db";
 import * as gh from "@/lib/github";
+import * as registries from "@/lib/registries";
 import { getExportData, getMe, getOverview, getRepoDetail } from "@/lib/queries";
 import { runSync } from "@/lib/sync";
 import { syncContributions, yearsToFetch } from "@/lib/sync-contributions";
@@ -34,8 +35,12 @@ vi.mock("@/lib/github", () => ({
   fetchCommunityHealth: vi.fn(),
   fetchDependabotAlerts: vi.fn(),
   fetchContributions: vi.fn(),
+  fetchDeployments: vi.fn(),
+  fetchDeploymentState: vi.fn(),
 }));
 const m = vi.mocked(gh);
+vi.mock("@/lib/registries", () => ({ fetchLatestVersion: vi.fn(), CHECKABLE_ECOSYSTEMS: new Set(["npm", "pypi"]) }));
+const reg = vi.mocked(registries);
 
 /** A gzipped GitHub-style tarball (one top-level directory) with the given files. */
 async function tarball(files: Record<string, string>) {
@@ -144,6 +149,9 @@ beforeEach(() => {
   m.fetchWorkflowRuns.mockResolvedValue([]);
   m.fetchCommunityHealth.mockResolvedValue(null);
   m.fetchDependabotAlerts.mockResolvedValue(null);
+  m.fetchDeployments.mockResolvedValue([]);
+  m.fetchDeploymentState.mockResolvedValue(null);
+  reg.fetchLatestVersion.mockResolvedValue(null);
   m.fetchBranchSha.mockResolvedValue("sha-1");
   m.fetchTarball.mockImplementation(() =>
     tarball({
@@ -622,5 +630,79 @@ describe("repo activity", () => {
     expect(d.activity.health).toMatchObject({ healthPercentage: 100, hasLicense: true });
     expect(d.activity.open).toEqual([expect.objectContaining({ number: 2, isPr: true, outside: false })]);
     expect(d.activity.ci?.runs).toBe(2);
+  });
+});
+
+describe("code health", () => {
+  it("stores test lines, TODOs, a daily code snapshot and the matched framework package", async () => {
+    m.listOwnedRepos.mockResolvedValue([repo(7, "health", { pushed_at: new Date().toISOString() })] as never);
+    m.fetchBranchSha.mockResolvedValue("sha-h1");
+    m.fetchTarball.mockImplementation(() =>
+      tarball({
+        "src/app.ts": "export const a = 1; // TODO tidy\nexport const b = 2;\n",
+        "src/app.test.ts": "test('a', () => {});\n// FIXME flaky\n",
+        "package.json": JSON.stringify({ dependencies: { react: "^18.2.0" } }),
+      }),
+    );
+    await pg.exec("delete from package_versions"); // earlier tests cached react's latest as unknown
+    reg.fetchLatestVersion.mockImplementation(async (eco: string, pkg: string) => (eco === "npm" && pkg === "react" ? "19.2.0" : null));
+    expect((await runSync()).errors).toEqual([]);
+
+    const r = await pg.query("select lines_of_code, test_lines, todo_count from repos where id = 7");
+    expect(r.rows[0]).toEqual({ lines_of_code: 4, test_lines: 2, todo_count: 2 });
+    const snap = await pg.query("select date::text, lines_of_code, test_lines, commit_sha from code_snapshots where repo_id = 7");
+    expect(snap.rows).toEqual([{ date: isoDay(), lines_of_code: 4, test_lines: 2, commit_sha: "sha-h1" }]);
+    const fw = await pg.query("select framework, package, ecosystem from repo_frameworks where repo_id = 7");
+    expect(fw.rows).toEqual([{ framework: "React", package: "react", ecosystem: "npm" }]);
+    const pv = await pg.query("select latest from package_versions where ecosystem = 'npm' and package = 'react'");
+    expect((pv.rows[0] as { latest: string }).latest).toBe("19.2.0");
+
+    // Looked up at most once a day
+    reg.fetchLatestVersion.mockClear();
+    await runSync();
+    expect(reg.fetchLatestVersion).not.toHaveBeenCalled();
+
+    const o = await getOverview(30);
+    expect(o.code.health).toMatchObject({ testLines: expect.any(Number), todos: expect.any(Number) });
+    expect(o.code.outdated.find((f) => f.framework === "React")?.repos).toContainEqual({ repo: "health", version: "18.2.0" });
+    expect(o.code.history.at(-1)!.lines).toBeGreaterThanOrEqual(4);
+    const d = (await getRepoDetail("jan", "health", 30))!;
+    expect(d.frameworks.find((f) => f.name === "React")).toMatchObject({ version: "18.2.0", latest: "19.2.0", outdated: true });
+    expect(d.codeHistory).toEqual([{ date: isoDay(), lines: 4, tests: 2 }]);
+  });
+
+  it("stores deployments, fetches their statuses in batches and handles a missing permission", async () => {
+    m.listOwnedRepos.mockResolvedValue([repo(7, "health")] as never);
+    const dep = (id: number, environment: string, hoursAgo: number) => ({
+      deploymentId: id,
+      environment,
+      ref: "main",
+      creator: "vercel[bot]",
+      createdAt: new Date(Date.now() - hoursAgo * 3_600_000).toISOString(),
+    });
+    m.fetchDeployments.mockResolvedValue([dep(3, "Production – web", 2), dep(2, "Preview – web", 5), dep(1, "github-pages", 30)]);
+    m.fetchDeploymentState.mockImplementation(async (_o: string, _r: string, id: number) => (id === 2 ? "failure" : "success"));
+    expect((await runSync()).errors).toEqual([]);
+    const rows = await pg.query("select deployment_id::int as id, production, state from deployments where repo_id = 7 order by deployment_id");
+    expect(rows.rows).toEqual([
+      { id: 1, production: true, state: "success" },
+      { id: 2, production: false, state: "failure" },
+      { id: 3, production: true, state: "success" },
+    ]);
+    // Settled states aren't fetched again
+    m.fetchDeploymentState.mockClear();
+    m.fetchDeployments.mockResolvedValue([]);
+    await runSync();
+    expect(m.fetchDeploymentState).not.toHaveBeenCalled();
+
+    const o = await getOverview(30);
+    expect(o.deploys).toMatchObject({ production: 2, preview: 1, failed: 1 });
+    expect(o.deploys!.successRate).toBeCloseTo(2 / 3);
+    expect((await getRepoDetail("jan", "health", 30))!.deploys).toMatchObject({ production: 2, preview: 1 });
+
+    m.fetchDeployments.mockResolvedValue(null);
+    expect((await runSync()).errors).toEqual([]);
+    const h = await pg.query("select deployments_available from repo_health where repo_id = 7");
+    expect((h.rows[0] as { deployments_available: boolean }).deployments_available).toBe(false);
   });
 });

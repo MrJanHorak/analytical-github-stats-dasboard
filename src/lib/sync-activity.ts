@@ -1,15 +1,25 @@
-import { sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
 import { getDb, schema } from "./db";
 import {
   fetchCommunityHealth,
   fetchDependabotAlerts,
+  fetchDeployments,
+  fetchDeploymentState,
   fetchIssues,
   fetchWorkflowRuns,
   type IssueItem,
   type WorkflowRunItem,
 } from "./github";
 
-const { issues, workflowRuns, repoHealth } = schema;
+const { issues, workflowRuns, repoHealth, deployments } = schema;
+
+/** Deployment statuses fetched per repo per sync (one request each); the rest follow on later runs. */
+const DEPLOYMENT_STATUS_BATCH = 20;
+/** States that may still change. */
+const UNSETTLED = ["pending", "queued", "in_progress"];
+
+/** Production-like environment names across Vercel, Netlify, GitHub Pages and Actions. */
+export const isProductionEnv = (env: string) => !/preview|staging|dev|test/i.test(env) && /production|^prod\b|^live$|github-pages|^main$/i.test(env);
 const excluded = (col: string) => sql.raw(`excluded.${col}`);
 
 /** Actions runs fetched on a repo's first activity sync. */
@@ -64,6 +74,47 @@ export async function syncRepoActivity(r: ActivityRepo, prev: Marker | undefined
 
   const dependabot = await fetchDependabotAlerts(owner, r.name);
 
+  // Deployments: new ones since the last sync (90 days the first time), then statuses for those
+  // still unknown or in progress, newest first, a batch per run
+  const depSince = prev?.deploymentsSyncedAt
+    ? new Date(prev.deploymentsSyncedAt.getTime() - 3_600_000)
+    : new Date(now.getTime() - RUNS_BACKFILL_DAYS * 86_400_000);
+  const deps = await fetchDeployments(owner, r.name, depSince);
+  if (deps?.length) {
+    await db
+      .insert(deployments)
+      .values(
+        deps.map((d) => ({
+          repoId: r.id,
+          deploymentId: d.deploymentId,
+          environment: d.environment,
+          production: isProductionEnv(d.environment),
+          ref: d.ref,
+          creator: d.creator,
+          createdAt: new Date(d.createdAt),
+        })),
+      )
+      .onConflictDoNothing();
+  }
+  if (deps) {
+    const pending = await db
+      .select({ id: deployments.deploymentId })
+      .from(deployments)
+      .where(
+        and(
+          eq(deployments.repoId, r.id),
+          gte(deployments.createdAt, new Date(now.getTime() - RUNS_BACKFILL_DAYS * 86_400_000)),
+          or(isNull(deployments.state), inArray(deployments.state, UNSETTLED)),
+        ),
+      )
+      .orderBy(desc(deployments.createdAt))
+      .limit(DEPLOYMENT_STATUS_BATCH);
+    for (const p of pending) {
+      const state = await fetchDeploymentState(owner, r.name, p.id);
+      if (state) await db.update(deployments).set({ state }).where(and(eq(deployments.repoId, r.id), eq(deployments.deploymentId, p.id)));
+    }
+  }
+
   const row: typeof repoHealth.$inferInsert = {
     repoId: r.id,
     dependabotCritical: dependabot?.critical ?? null,
@@ -72,6 +123,8 @@ export async function syncRepoActivity(r: ActivityRepo, prev: Marker | undefined
     dependabotLow: dependabot?.low ?? null,
     actionsAvailable: runs !== null,
     issuesAvailable: items !== null,
+    deploymentsAvailable: deps !== null,
+    deploymentsSyncedAt: deps ? now : (prev?.deploymentsSyncedAt ?? null),
     issuesSyncedAt: items ? now : (prev?.issuesSyncedAt ?? null),
     runsSyncedAt: runs ? now : (prev?.runsSyncedAt ?? null),
     activitySyncedAt: now,

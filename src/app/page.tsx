@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { CiPanel, IssueFlowPanel, SecurityCounts } from "@/components/Activity";
 import { FrameworksPanel } from "@/components/Frameworks";
+import { CodeHealthPanel, DeploysPanel } from "@/components/CodeHealth";
 import { LocalTime } from "@/components/LocalTime";
 import { TimeSeriesChart } from "@/components/charts";
 import { RangePicker } from "@/components/RangePicker";
@@ -161,6 +162,11 @@ export default async function Overview({ searchParams }: { searchParams: Promise
       </div>
 
       <FrameworksPanel groups={code.frameworks} range={rangeParam(range)} reposCounted={code.reposCounted} />
+
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <CodeHealthPanel health={code.health} history={code.history} outdated={code.outdated} range={rangeParam(range)} />
+        <DeploysPanel deploys={data.deploys} permissionMissing={data.deployPermissionMissing} />
+      </div>
 
       {data.activity.synced ? (
         <>

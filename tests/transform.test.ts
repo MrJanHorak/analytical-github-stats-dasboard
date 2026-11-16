@@ -6,13 +6,16 @@ import {
   aggregateLanguages,
   bucket,
   ciStats,
+  codeHistory,
   contributionStreaks,
+  deployStats,
   crossedMilestones,
   cumulativeByDay,
   dayRange,
   detectSpike,
   fillDaily,
   heatmapWeeks,
+  isOutdated,
   isOutside,
   issueFlow,
   joinSeries,
@@ -20,6 +23,7 @@ import {
   median,
   mergeTraffic,
   monthlyCodeFrequency,
+  outdatedFrameworks,
   shortDuration,
   weeklyIssueFlow,
   pctChange,
@@ -401,5 +405,77 @@ describe("aggregateFrameworks", () => {
       },
       { category: "Deployment", frameworks: [{ name: "Docker", category: "Deployment", repos: 1, newest: null }] },
     ]);
+  });
+});
+
+describe("isOutdated / outdatedFrameworks", () => {
+  it("flags a major behind, or a minor behind for 0.x; ignores pre-releases", () => {
+    expect(isOutdated("18.3.1", "19.0.0")).toBe(true);
+    expect(isOutdated("19.0.0", "19.2.1")).toBe(false);
+    expect(isOutdated("0.6.2", "0.7.0")).toBe(true);
+    expect(isOutdated("0.7", "0.7.9")).toBe(false);
+    expect(isOutdated("15.0.0", "16.0.0-canary.3")).toBe(false);
+    expect(isOutdated(null, "1.0.0")).toBe(false);
+    expect(isOutdated("20.0.0", "19.0.0")).toBe(false);
+  });
+  it("lists outdated frameworks with the affected repos, most repos first", () => {
+    const rows = [
+      { repo: "b", framework: "React", version: "18.2.0", package: "react", ecosystem: "npm" },
+      { repo: "a", framework: "React", version: "17.0.2", package: "react", ecosystem: "npm" },
+      { repo: "c", framework: "React", version: "19.1.0", package: "react", ecosystem: "npm" },
+      { repo: "a", framework: "Django", version: "4.2", package: "django", ecosystem: "pypi" },
+      { repo: "a", framework: "Docker", version: null, package: null, ecosystem: null },
+    ];
+    const latest = new Map([["npm:react", "19.2.0"], ["pypi:django", "6.0"]]);
+    expect(outdatedFrameworks(rows, latest)).toEqual([
+      { framework: "React", latest: "19.2.0", repos: [{ repo: "a", version: "17.0.2" }, { repo: "b", version: "18.2.0" }] },
+      { framework: "Django", latest: "6.0", repos: [{ repo: "a", version: "4.2" }] },
+    ]);
+  });
+});
+
+describe("deployStats", () => {
+  it("splits production/preview, computes success rate, per repo and per week", () => {
+    const d = (repo: string, production: boolean, state: string | null, day: string) => ({ repo, production, state, createdAt: at(day) });
+    const s = deployStats(
+      [
+        d("web", true, "success", "2026-11-03"),
+        d("web", true, "failure", "2026-11-04"),
+        d("web", false, "success", "2026-11-10"),
+        d("api", true, "inactive", "2026-11-11"),
+        d("api", true, null, "2026-11-12"),
+        d("old", true, "success", "2026-10-01"),
+      ],
+      "2026-11-02",
+      "2026-11-15",
+    );
+    expect(s).toMatchObject({ total: 5, production: 4, preview: 1, failed: 1, productionPerWeek: 2 });
+    expect(s.successRate).toBeCloseTo(2 / 3);
+    expect(s.byRepo.map((r) => [r.repo, r.production, r.preview])).toEqual([
+      ["web", 2, 1],
+      ["api", 2, 0],
+    ]);
+    expect(s.weekly).toEqual([
+      { date: "2026-11-02", production: 2, preview: 0 },
+      { date: "2026-11-09", production: 2, preview: 1 },
+    ]);
+  });
+});
+
+describe("codeHistory", () => {
+  it("sums each repo's latest snapshot per day, carrying values forward", () => {
+    const snaps = [
+      { repoId: 1, date: "2026-11-01", linesOfCode: 100, testLines: 10 },
+      { repoId: 2, date: "2026-11-02", linesOfCode: 50, testLines: 0 },
+      { repoId: 1, date: "2026-11-04", linesOfCode: 120, testLines: 20 },
+    ];
+    expect(codeHistory(snaps, "2026-10-30", "2026-11-04")).toEqual([
+      { date: "2026-11-01", lines: 100, tests: 10 },
+      { date: "2026-11-02", lines: 150, tests: 10 },
+      { date: "2026-11-03", lines: 150, tests: 10 },
+      { date: "2026-11-04", lines: 170, tests: 20 },
+    ]);
+    expect(codeHistory(snaps, "2026-11-03", "2026-11-03")).toEqual([{ date: "2026-11-03", lines: 150, tests: 10 }]);
+    expect(codeHistory([], "2026-11-01", "2026-11-02")).toEqual([]);
   });
 });

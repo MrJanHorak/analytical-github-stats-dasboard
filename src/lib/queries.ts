@@ -7,13 +7,17 @@ import {
   aggregateLanguages,
   bucket,
   ciStats,
+  codeHistory,
   contributionStreaks,
+  deployStats,
   cumulativeByDay,
   fillDaily,
   heatmapWeeks,
+  isOutdated,
   isOutside,
   issueFlow,
   joinSeries,
+  outdatedFrameworks,
   weeklyIssueFlow,
   likelyAutomated,
   pivotReferrers,
@@ -43,6 +47,9 @@ const {
   issues,
   workflowRuns,
   repoHealth,
+  codeSnapshots,
+  deployments,
+  packageVersions,
 } = schema;
 
 type Totals = { views: number; viewUniques: number; clones: number; cloneUniques: number };
@@ -145,6 +152,67 @@ async function loadActivity(since: string, until: string, repoId?: number) {
   };
 }
 
+/**
+ * Code health for the range — test lines and TODOs, lines over time (from daily snapshots), frameworks
+ * behind their latest major, deployments — for all `repoIds` (overview) or one repo (detail).
+ */
+async function loadCodeHealth(since: string, until: string, repoIds: number[]) {
+  const db = getDb();
+  if (!repoIds.length) return null;
+  const sinceTs = new Date(since + "T00:00:00Z");
+  const [counts, snaps, fw, latestRows, deps, health] = await Promise.all([
+    db
+      .select({ id: repos.id, testLines: repos.testLines, todoCount: repos.todoCount, linesOfCode: repos.linesOfCode })
+      .from(repos)
+      .where(inArray(repos.id, repoIds)),
+    db
+      .select({ repoId: codeSnapshots.repoId, date: codeSnapshots.date, linesOfCode: codeSnapshots.linesOfCode, testLines: codeSnapshots.testLines })
+      .from(codeSnapshots)
+      .where(inArray(codeSnapshots.repoId, repoIds)),
+    db
+      .select({
+        repo: repos.name,
+        framework: repoFrameworks.framework,
+        version: repoFrameworks.version,
+        package: repoFrameworks.package,
+        ecosystem: repoFrameworks.ecosystem,
+      })
+      .from(repoFrameworks)
+      .innerJoin(repos, eq(repos.id, repoFrameworks.repoId))
+      .where(inArray(repoFrameworks.repoId, repoIds)),
+    db.select().from(packageVersions),
+    db
+      .select({ repo: repos.name, production: deployments.production, state: deployments.state, createdAt: deployments.createdAt })
+      .from(deployments)
+      .innerJoin(repos, eq(repos.id, deployments.repoId))
+      .where(and(inArray(deployments.repoId, repoIds), gte(deployments.createdAt, sinceTs))),
+    db.select({ available: repoHealth.deploymentsAvailable }).from(repoHealth).where(inArray(repoHealth.repoId, repoIds)),
+  ]);
+  const latest = new Map(latestRows.map((l) => [`${l.ecosystem}:${l.package}`, l.latest]));
+  const counted = counts.filter((c) => c.testLines !== null);
+  const testLines = counted.reduce((a, c) => a + (c.testLines ?? 0), 0);
+  const codeLines = counted.reduce((a, c) => a + (c.linesOfCode ?? 0), 0);
+  const anyDeployAccess = health.some((h) => h.available);
+  return {
+    health: counted.length
+      ? {
+          testLines,
+          /** Share of counted lines that are tests */
+          testRatio: codeLines ? testLines / codeLines : null,
+          todos: counted.reduce((a, c) => a + (c.todoCount ?? 0), 0),
+          reposWithTests: counted.filter((c) => (c.testLines ?? 0) > 0).length,
+          reposCounted: counted.length,
+        }
+      : null,
+    history: codeHistory(snaps, since, until),
+    outdated: outdatedFrameworks(fw, latest),
+    latest,
+    /** null when the token can't read deployments for any of these repos */
+    deploys: anyDeployAccess || deps.length ? deployStats(deps, since, until) : null,
+    deployPermissionMissing: health.length > 0 && health.every((h) => h.available === false),
+  };
+}
+
 const alertTotal = (h: typeof repoHealth.$inferSelect | undefined) =>
   !h || h.dependabotHigh === null
     ? null
@@ -241,6 +309,7 @@ export async function getOverview(rangeDays: number) {
   const ownIds = new Set(allRepos.filter((r) => !r.isFork).map((r) => r.id));
   const ownRepos = rows.filter((r) => ownIds.has(r.id));
   const withLines = ownRepos.filter((r) => r.linesOfCode !== null);
+  const codeHealth = await loadCodeHealth(since, until, [...ownIds]);
   const code = {
     languages: aggregateLanguages(langRows.filter((l) => ownIds.has(l.repoId))),
     /** Non-blank lines per language (in the `bytes` field, so the same helpers/components work) */
@@ -250,6 +319,12 @@ export async function getOverview(rangeDays: number) {
     linesOfCode: withLines.reduce((a, r) => a + (r.linesOfCode ?? 0), 0),
     reposWithLines: withLines.length,
     reposCounted: ownRepos.length,
+    /** Test lines, TODOs (null before the first recount) */
+    health: codeHealth?.health ?? null,
+    /** Total lines over time, from daily snapshots */
+    history: codeHealth?.history ?? [],
+    /** Frameworks declared a major version behind the latest release */
+    outdated: codeHealth?.outdated ?? [],
     largest: [...withLines]
       .sort((a, b) => (b.linesOfCode ?? 0) - (a.linesOfCode ?? 0))
       .slice(0, 8)
@@ -329,6 +404,9 @@ export async function getOverview(rangeDays: number) {
     lastRun: lastRun[0] ?? null,
     previous: prevSince ? prev[0] ?? ZERO : null,
     code,
+    /** Deployments across your repos; null when the token can't read them */
+    deploys: codeHealth?.deploys ?? null,
+    deployPermissionMissing: codeHealth?.deployPermissionMissing ?? false,
     activity: {
       synced: activity.synced,
       flow: activity.flow,
@@ -374,6 +452,7 @@ export async function getRepoDetail(owner: string, name: string, rangeDays: numb
   if (!repo) return null;
   const { since, until, prevSince } = await windowFor(rangeDays, repo.id);
   const activity = await loadActivity(since, until, repo.id);
+  const codeHealth = await loadCodeHealth(since, until, [repo.id]);
 
   const latestFor = (table: typeof referrers | typeof popularPaths | typeof releaseAssets) =>
     sql`${table.date} = (select max(date) from ${table} where repo_id = ${repo.id})`;
@@ -432,7 +511,13 @@ export async function getRepoDetail(owner: string, name: string, rangeDays: numb
       .where(eq(repoLoc.repoId, repo.id))
       .orderBy(desc(repoLoc.nonBlank)),
     db
-      .select({ name: repoFrameworks.framework, category: repoFrameworks.category, version: repoFrameworks.version })
+      .select({
+        name: repoFrameworks.framework,
+        category: repoFrameworks.category,
+        version: repoFrameworks.version,
+        package: repoFrameworks.package,
+        ecosystem: repoFrameworks.ecosystem,
+      })
       .from(repoFrameworks)
       .where(eq(repoFrameworks.repoId, repo.id)),
   ]);
@@ -472,10 +557,21 @@ export async function getRepoDetail(owner: string, name: string, rangeDays: numb
     languages: langs,
     /** Lines of code per language on the default branch; empty until counted */
     loc,
-    /** Frameworks & tools, in category order */
-    frameworks: frameworks.sort(
-      (a, b) => CATEGORIES.indexOf(a.category as (typeof CATEGORIES)[number]) - CATEGORIES.indexOf(b.category as (typeof CATEGORIES)[number]) || a.name.localeCompare(b.name),
-    ),
+    /** Frameworks & tools, in category order, with the latest release and whether this repo is a major behind */
+    frameworks: frameworks
+      .sort(
+        (a, b) =>
+          CATEGORIES.indexOf(a.category as (typeof CATEGORIES)[number]) - CATEGORIES.indexOf(b.category as (typeof CATEGORIES)[number]) ||
+          a.name.localeCompare(b.name),
+      )
+      .map((f) => {
+        const latest = (f.package && codeHealth?.latest.get(`${f.ecosystem}:${f.package}`)) || null;
+        return { name: f.name, category: f.category, version: f.version, latest, outdated: isOutdated(f.version, latest) };
+      }),
+    /** Lines and test lines over the range, from daily snapshots */
+    codeHistory: codeHealth?.history ?? [],
+    deploys: codeHealth?.deploys ?? null,
+    deployPermissionMissing: codeHealth?.deployPermissionMissing ?? false,
     activity: {
       synced: activity.synced,
       flow: activity.flow,
