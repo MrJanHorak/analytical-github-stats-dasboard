@@ -1,3 +1,5 @@
+import { Readable } from "node:stream";
+import type { ReadableStream as WebReadableStream } from "node:stream/web";
 import { Octokit } from "@octokit/rest";
 
 let _octokit: Octokit | null = null;
@@ -87,6 +89,33 @@ export async function fetchCodeFrequency(owner: string, repo: string): Promise<n
   const res = await getOctokit().rest.repos.getCodeFrequencyStats({ owner, repo });
   if ((res.status as number) === 202) return null;
   return Array.isArray(res.data) ? res.data : [];
+}
+
+/** Latest commit on a branch, or null for an empty repository (GitHub answers 404/409). */
+export async function fetchBranchSha(owner: string, repo: string, branch: string): Promise<string | null> {
+  try {
+    const { data } = await getOctokit().rest.repos.getBranch({ owner, repo, branch });
+    return data.commit.sha;
+  } catch (e) {
+    const status = (e as { status?: unknown } | null)?.status;
+    if (status === 404 || status === 409) return null;
+    throw e;
+  }
+}
+
+/**
+ * The gzipped tarball of a commit, as a stream (it is counted on the fly, never buffered whole).
+ * GitHub redirects to a short-lived codeload URL that carries its own token.
+ */
+export async function fetchTarball(owner: string, repo: string, ref: string): Promise<Readable> {
+  const token = process.env.GITHUB_TOKEN;
+  if (!token) throw new Error("GITHUB_TOKEN is not set");
+  const res = await fetch(`https://api.github.com/repos/${owner}/${repo}/tarball/${encodeURIComponent(ref)}`, {
+    headers: { authorization: `Bearer ${token}`, "user-agent": "github-repo-stats", accept: "application/vnd.github+json" },
+    redirect: "follow",
+  });
+  if (!res.ok || !res.body) throw new Error(`tarball ${owner}/${repo}@${ref.slice(0, 7)}: HTTP ${res.status}`);
+  return Readable.fromWeb(res.body as unknown as WebReadableStream);
 }
 
 /** Weekly commit counts for the last year. GitHub returns 202 while computing; we return [] then. */

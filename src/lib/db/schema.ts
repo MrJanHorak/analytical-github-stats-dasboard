@@ -29,10 +29,15 @@ export const repos = pgTable("repos", {
   createdAt: timestamp("created_at", { withTimezone: true }),
   pushedAt: timestamp("pushed_at", { withTimezone: true }),
   syncedAt: timestamp("synced_at", { withTimezone: true }),
-  /** Approximate lines of code: net lines added across all commits (GitHub code_frequency). Null = unknown. */
+  /**
+   * Non-blank lines of code on the default branch, counted from the tarball (lock files, vendored,
+   * generated, minified and non-code files excluded — see src/lib/loc.ts). Null = not counted (yet).
+   */
   linesOfCode: integer("lines_of_code"),
-  /** The pushed_at that languages + lines were last computed for; refetched when the repo is pushed again. */
+  /** The pushed_at that languages + lines were last checked for; rechecked when the repo is pushed again. */
   codeStatsPushedAt: timestamp("code_stats_pushed_at", { withTimezone: true }),
+  /** Default-branch commit the line count is for; a push to another branch doesn't trigger a recount. */
+  locCommitSha: text("loc_commit_sha"),
 });
 
 /** Bytes per language (GitHub Linguist — skips vendored and generated files). Current state, replaced on refresh. */
@@ -42,6 +47,19 @@ export const repoLanguages = pgTable(
     repoId: repoId(),
     language: text("language").notNull(),
     bytes: bigint("bytes", { mode: "number" }).notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.repoId, t.language] })],
+);
+
+/** Lines of code per language on the default branch (see repos.linesOfCode). Current state, replaced on recount. */
+export const repoLoc = pgTable(
+  "repo_loc",
+  {
+    repoId: repoId(),
+    language: text("language").notNull(),
+    files: integer("files").notNull(),
+    lines: integer("lines").notNull(),
+    nonBlank: integer("non_blank").notNull(),
   },
   (t) => [primaryKey({ columns: [t.repoId, t.language] })],
 );

@@ -2,20 +2,23 @@ import { eq, sql } from "drizzle-orm";
 import { evaluateAlerts, notifyAlerts } from "./alerts";
 import { getDb, schema } from "./db";
 import {
-  fetchCodeFrequency,
+  fetchBranchSha,
   fetchForks,
   fetchLanguages,
   fetchReleases,
   fetchStargazers,
+  fetchTarball,
   fetchTraffic,
   listOwnedRepos,
 } from "./github";
-import { mergeTraffic, netLines } from "./transform";
+import { countTarball } from "./loc";
+import { mergeTraffic } from "./transform";
 import { isoDay, mapLimit } from "./utils";
 
 const {
   repos,
   repoLanguages,
+  repoLoc,
   repoSnapshots,
   trafficDaily,
   trafficWindows,
@@ -36,7 +39,7 @@ export type SyncResult = {
   reposSynced: number;
   /** Star/fork history refreshes left for the next run because the time budget ran out */
   historyPending: number;
-  /** Repos whose languages / lines of code still need (re)computing next run (time budget, or GitHub still computing) */
+  /** Repos whose languages / lines of code still need (re)computing next run (time budget ran out) */
   codeStatsPending: number;
   /** New alerts recorded this run (spikes, star bursts, milestones) */
   alertsCreated: number;
@@ -55,9 +58,10 @@ export type SyncOptions = {
    * Leftover history work is picked up automatically on the next run.
    */
   timeBudgetMs?: number;
-  /** Wait before retrying repos whose line stats GitHub was still computing (default 5s). */
-  codeStatsRetryMs?: number;
 };
+
+/** Repos bigger than this (GitHub's size, in KB) are not downloaded for line counting. */
+export const MAX_LOC_REPO_KB = 500 * 1024;
 
 type OwnedRepo = Awaited<ReturnType<typeof listOwnedRepos>>[number];
 type HistoryJob = { repo: OwnedRepo; kind: "stars" | "forks"; size: number };
@@ -125,23 +129,17 @@ export async function runSync(opts: SyncOptions = {}): Promise<SyncResult> {
       }
     });
 
-    // Phase 3 — languages + approximate lines of code: only for repos pushed since they were last computed.
-    let codeJobs = owned.filter((r) => r.pushed_at && codeStatsFor.get(r.id) !== new Date(r.pushed_at).getTime());
-    for (let attempt = 0; attempt < 2 && codeJobs.length && !outOfTime(); attempt++) {
-      // GitHub computes code_frequency on demand (202); give it a moment, then retry those once.
-      if (attempt) await new Promise((res) => setTimeout(res, opts.codeStatsRetryMs ?? 5000));
-      const notReady: OwnedRepo[] = [];
-      await mapLimit(codeJobs, 4, async (r) => {
-        if (outOfTime()) return void notReady.push(r);
-        try {
-          if (!(await syncCodeStats(r))) notReady.push(r);
-        } catch (e) {
-          errors.push({ repo: `${r.full_name} (code stats)`, error: errMsg(e) });
-        }
-      });
-      codeJobs = notReady;
-    }
-    codeStatsPending = codeJobs.length;
+    // Phase 3 — languages + lines of code: only for repos pushed since they were last checked.
+    // Counting downloads a tarball, so it is done two at a time and stops when the budget runs out.
+    const codeJobs = owned.filter((r) => r.pushed_at && codeStatsFor.get(r.id)?.at !== new Date(r.pushed_at).getTime());
+    await mapLimit(codeJobs, 2, async (r) => {
+      if (outOfTime()) return void codeStatsPending++;
+      try {
+        await syncCodeStats(r, codeStatsFor.get(r.id)?.sha ?? null);
+      } catch (e) {
+        errors.push({ repo: `${r.full_name} (code stats)`, error: errMsg(e) });
+      }
+    });
   } catch (e) {
     errors.push({ repo: "*", error: errMsg(e) });
   }
@@ -167,44 +165,45 @@ export async function runSync(opts: SyncOptions = {}): Promise<SyncResult> {
   return { reposSynced, historyPending, codeStatsPending, alertsCreated, starHistoryUnavailable, errors };
 }
 
-/** repo id → pushed_at (ms) that languages/lines were last computed for */
+/** repo id → pushed_at (ms) that languages/lines were last checked for, and the commit that was counted */
 async function codeStatsMarkers() {
   const rows = await getDb()
-    .select({ id: repos.id, at: repos.codeStatsPushedAt })
+    .select({ id: repos.id, at: repos.codeStatsPushedAt, sha: repos.locCommitSha })
     .from(repos)
     .where(sql`${repos.codeStatsPushedAt} is not null`);
-  return new Map(rows.map((r) => [r.id, r.at!.getTime()]));
+  return new Map(rows.map((r) => [r.id, { at: r.at!.getTime(), sha: r.sha }]));
 }
 
 /**
- * Store languages and approximate lines of code. Returns false when GitHub is still computing
- * the line stats (try again later); the repo is then not marked as done.
+ * Store languages and lines of code. Lines are recounted from the default branch's tarball only
+ * when its latest commit differs from the one last counted (a push to another branch is cheap).
  */
-async function syncCodeStats(r: OwnedRepo): Promise<boolean> {
+async function syncCodeStats(r: OwnedRepo, countedSha: string | null) {
   const db = getDb();
   const owner = r.owner.login;
-  const [languages, weeks] = await Promise.all([
-    fetchLanguages(owner, r.name),
-    fetchCodeFrequency(owner, r.name).catch((e) => {
-      // 422: too many commits (10k+) for GitHub to compute — lines stay unknown, everything else works.
-      if ((e as { status?: unknown } | null)?.status === 422) return "too-big" as const;
-      throw e;
-    }),
-  ]);
-
+  const languages = await fetchLanguages(owner, r.name);
   await db.delete(repoLanguages).where(eq(repoLanguages.repoId, r.id));
   const langRows = Object.entries(languages ?? {}).map(([language, bytes]) => ({ repoId: r.id, language, bytes }));
   if (langRows.length) await db.insert(repoLanguages).values(langRows).onConflictDoNothing();
 
-  if (weeks === null) return false;
-  await db
-    .update(repos)
-    .set({
-      linesOfCode: weeks === "too-big" ? null : netLines(weeks),
-      codeStatsPushedAt: new Date(r.pushed_at!),
-    })
-    .where(eq(repos.id, r.id));
-  return true;
+  const markDone = (set: Partial<typeof repos.$inferInsert> = {}) =>
+    db
+      .update(repos)
+      .set({ ...set, codeStatsPushedAt: new Date(r.pushed_at!) })
+      .where(eq(repos.id, r.id));
+
+  if ((r.size ?? 0) > MAX_LOC_REPO_KB) {
+    await db.delete(repoLoc).where(eq(repoLoc.repoId, r.id));
+    return markDone({ linesOfCode: null, locCommitSha: null });
+  }
+  const sha = await fetchBranchSha(owner, r.name, r.default_branch);
+  if (sha && sha === countedSha) return markDone();
+
+  const summary = sha ? await countTarball(await fetchTarball(owner, r.name, sha)) : null;
+  await db.delete(repoLoc).where(eq(repoLoc.repoId, r.id));
+  const locRows = (summary?.languages ?? []).map((l) => ({ repoId: r.id, ...l }));
+  if (locRows.length) await db.insert(repoLoc).values(locRows).onConflictDoNothing();
+  return markDone({ linesOfCode: summary?.nonBlank ?? 0, locCommitSha: sha });
 }
 
 async function countBy(table: typeof starEvents | typeof forkEvents) {

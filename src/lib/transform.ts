@@ -151,15 +151,6 @@ export function toCsv(rows: Record<string, unknown>[], columns?: string[]): stri
   return [cols.join(","), ...rows.map((r) => cols.map((c) => esc(r[c])).join(","))].join("\n") + "\n";
 }
 
-/**
- * Approximate current line count from GitHub's weekly code_frequency: total lines added minus deleted.
- * Counts every file (lockfiles included), so treat it as a rough size, not an exact LOC.
- */
-export function netLines(weeks: number[][]): number {
-  const total = weeks.reduce((a, [, add = 0, del = 0]) => a + add + del, 0);
-  return Math.max(0, total);
-}
-
 /** Sum bytes per language across repos, largest first, with how many repos use each. */
 export function aggregateLanguages(rows: { repoId: number; language: string; bytes: number }[]) {
   const by = new Map<string, { language: string; bytes: number; repos: number }>();
