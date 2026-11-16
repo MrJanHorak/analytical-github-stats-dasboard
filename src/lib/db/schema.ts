@@ -213,3 +213,128 @@ export const syncRuns = pgTable("sync_runs", {
   reposSynced: integer("repos_synced").notNull().default(0),
   error: text("error"),
 });
+
+// --- Your own activity (the token's user), for /me ----------------------------------------------
+
+/** Daily contribution counts from GitHub's contribution calendar, back to account creation. */
+export const contributionDays = pgTable(
+  "contribution_days",
+  {
+    login: text("login").notNull(),
+    date: date("date").notNull(),
+    count: integer("count").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.login, t.date] })],
+);
+
+/** Contribution totals per calendar year (GitHub only answers one year per query). */
+export const contributionYears = pgTable(
+  "contribution_years",
+  {
+    login: text("login").notNull(),
+    year: integer("year").notNull(),
+    commits: integer("commits").notNull(),
+    pullRequests: integer("pull_requests").notNull(),
+    issues: integer("issues").notNull(),
+    reviews: integer("reviews").notNull(),
+    reposWithCommits: integer("repos_with_commits").notNull(),
+    /** Contributions in private repos the token can't see (counted, not itemised) */
+    restricted: integer("restricted").notNull(),
+    total: integer("total").notNull(),
+    /** A year is final once it has been synced after it ended */
+    syncedAt: timestamp("synced_at", { withTimezone: true }).notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.login, t.year] })],
+);
+
+/** Commits and pull requests per repository per year (any repo you contributed to, not just your own). */
+export const contributionRepos = pgTable(
+  "contribution_repos",
+  {
+    login: text("login").notNull(),
+    year: integer("year").notNull(),
+    repo: text("repo").notNull(), // owner/name
+    commits: integer("commits").notNull(),
+    pullRequests: integer("pull_requests").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.login, t.year, t.repo] })],
+);
+
+/** Daily followers / following snapshot → growth chart. */
+export const profileSnapshots = pgTable(
+  "profile_snapshots",
+  {
+    login: text("login").notNull(),
+    date: date("date").notNull(),
+    followers: integer("followers").notNull(),
+    following: integer("following").notNull(),
+    publicRepos: integer("public_repos").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.login, t.date] })],
+);
+
+// --- Repo activity (M3.7) ------------------------------------------------------------------------
+
+/** Issues and pull requests (incrementally synced; GitHub's issues list includes PRs). */
+export const issues = pgTable(
+  "issues",
+  {
+    repoId: repoId(),
+    number: integer("number").notNull(),
+    isPr: boolean("is_pr").notNull(),
+    title: text("title").notNull(),
+    author: text("author"),
+    /** OWNER / MEMBER / COLLABORATOR = you and your team; anything else = outside contributor */
+    authorAssociation: text("author_association").notNull(),
+    isBot: boolean("is_bot").notNull(),
+    state: text("state").notNull(), // open | closed
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+    closedAt: timestamp("closed_at", { withTimezone: true }),
+    mergedAt: timestamp("merged_at", { withTimezone: true }),
+  },
+  (t) => [primaryKey({ columns: [t.repoId, t.number] }), index("issues_created_idx").on(t.createdAt)],
+);
+
+/** GitHub Actions workflow runs (first sync: the last 90 days; then incremental). */
+export const workflowRuns = pgTable(
+  "workflow_runs",
+  {
+    repoId: repoId(),
+    runId: bigint("run_id", { mode: "number" }).notNull(),
+    workflow: text("workflow").notNull(),
+    event: text("event").notNull(),
+    branch: text("branch"),
+    status: text("status").notNull(),
+    conclusion: text("conclusion"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.repoId, t.runId] }), index("workflow_runs_created_idx").on(t.createdAt)],
+);
+
+/**
+ * Current community health + open Dependabot alerts per repo, plus the activity sync's markers.
+ * Null health = GitHub has no community profile for the repo (private). Null Dependabot = no
+ * permission or alerts disabled. actions_available = false when the token can't read Actions.
+ */
+export const repoHealth = pgTable("repo_health", {
+  repoId: repoId().primaryKey(),
+  healthPercentage: integer("health_percentage"),
+  hasReadme: boolean("has_readme"),
+  hasLicense: boolean("has_license"),
+  hasCodeOfConduct: boolean("has_code_of_conduct"),
+  hasContributing: boolean("has_contributing"),
+  hasIssueTemplate: boolean("has_issue_template"),
+  hasPrTemplate: boolean("has_pr_template"),
+  hasDescription: boolean("has_description"),
+  healthCheckedAt: timestamp("health_checked_at", { withTimezone: true }),
+  dependabotCritical: integer("dependabot_critical"),
+  dependabotHigh: integer("dependabot_high"),
+  dependabotMedium: integer("dependabot_medium"),
+  dependabotLow: integer("dependabot_low"),
+  actionsAvailable: boolean("actions_available"),
+  issuesSyncedAt: timestamp("issues_synced_at", { withTimezone: true }),
+  runsSyncedAt: timestamp("runs_synced_at", { withTimezone: true }),
+  activitySyncedAt: timestamp("activity_synced_at", { withTimezone: true }),
+});

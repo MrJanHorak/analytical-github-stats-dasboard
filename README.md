@@ -10,9 +10,11 @@ A self-hosted Next.js dashboard for **views, unique visitors, clones, referrers,
 
 | | |
 |---|---|
-| **Overview** | Totals with % change vs the previous period, language and lines-of-code totals, a 🤖 hint on clones that look automated, daily traffic chart, sortable/filterable repo table with sparklines, top referrers with trends, recent alerts, CSV export |
-| **Repo detail** | Views & clones (total vs unique), full star & fork history, recent stargazers and forks, referrer trend, popular content, languages, lines of code by language, likely-automated clone hint, weekly commits, release downloads |
+| **Overview** | Totals with % change vs the previous period, issue/PR flow, CI pass rates, open Dependabot alerts, language and lines-of-code totals, a 🤖 hint on clones that look automated, daily traffic chart, sortable/filterable repo table with sparklines, top referrers with trends, recent alerts, CSV export |
+| **Repo detail** | Views & clones (total vs unique), full star & fork history, recent stargazers and forks, referrer trend, popular content, languages, lines of code by language, likely-automated clone hint, weekly commits, code growth (lines added/deleted per month), release downloads |
 | **Code** | Languages across all your repos (share of bytes, repos per language) and real lines of code per repo, per language and in total — counted from each repo's default branch with lock files, vendored, generated and non-code files left out, and recounted only when the default branch gets a new commit. Forks are left out of the totals |
+| **Your activity** | `/me`: your contributions in any repo, as GitHub counts them — all-time commits, pull requests, issues and reviews, a contribution heatmap with current and longest streak, totals per year, the repos you contribute to most (yours and others'), and follower growth |
+| **Project activity** | Issues and pull requests opened/closed/merged, median time to close and to merge, what's open now and who your outside contributors are (bots and your team left out); GitHub Actions pass rate, run count and duration per workflow plus recent failures; GitHub's community-health score and checklist (README, license, contributing guide, …) and open Dependabot alerts by severity. In the repo table: health and CI columns and an alerts badge |
 | **History** | Traffic is stored daily, so it outlives GitHub's 14-day limit. Star and fork history is rebuilt from GitHub's timestamps, back to the day each repo was created |
 | **Alerts** | Traffic spikes, star bursts and star milestones, shown in the app and optionally posted to Slack or Discord |
 | **Notes** | Pin notes like "Posted on Hacker News" to a date; they show as markers on the charts |
@@ -25,6 +27,23 @@ A self-hosted Next.js dashboard for **views, unique visitors, clones, referrers,
 <tr>
 <td width="50%"><b>Languages</b> — share of code by bytes, and how many repos use each<br><img src="docs/languages.png" alt="Languages across all repos"></td>
 <td width="50%"><b>Lines of code</b> — total, by language and largest repos<br><img src="docs/lines-of-code.png" alt="Lines of code"></td>
+</tr>
+</table>
+
+### Your activity
+
+![Your activity](docs/your-activity.png)
+
+### Project activity
+
+<table>
+<tr>
+<td width="50%"><b>Issues & pull requests</b> — flow, time to close/merge, outside contributors<br><img src="docs/issues-prs.png" alt="Issues and pull requests"></td>
+<td width="50%"><b>GitHub Actions</b> — pass rate and duration per workflow, recent failures<br><img src="docs/actions-ci.png" alt="GitHub Actions"></td>
+</tr>
+<tr>
+<td><b>Community health</b> — GitHub's checklist and open Dependabot alerts<br><img src="docs/community-health.png" alt="Community health"></td>
+<td></td>
 </tr>
 </table>
 
@@ -47,11 +66,15 @@ A self-hosted Next.js dashboard for **views, unique visitors, clones, referrers,
 
 GitHub's Traffic API only returns the last 14 days. A daily sync job (`/api/cron/sync`, or `npm run sync`) pulls everything and upserts it into Postgres, so your history keeps growing. The dashboard reads only from the database. After each sync, the alert check looks at yesterday's numbers (the last complete day) and posts anything new to your webhook.
 
+For each of your own repos (forks and archived repos left out) the sync also keeps issues and pull requests, GitHub Actions runs (the last 90 days on the first sync), open Dependabot alerts and GitHub's community profile up to date. After the first sync this is incremental — about three requests per repo per day.
+
+The sync also stores your own contribution history (one GraphQL query per calendar year — the first run backfills every year back to when your account was created, later runs refresh only the current year) and a daily snapshot of your followers.
+
 See [PLAN.md](./PLAN.md) for the architecture, data model and roadmap.
 
 ## Setup
 
-1. **Token**: create a [fine-grained PAT](https://github.com/settings/personal-access-tokens/new) with *All repositories*, **Administration: Read-only**, **Contents: Read-only** (release download counts) and **Metadata: Read-only** (or a classic token with `repo`).
+1. **Token**: create a [fine-grained PAT](https://github.com/settings/personal-access-tokens/new) with *All repositories*, **Administration: Read-only**, **Contents: Read-only** (release download counts, line counting) and **Metadata: Read-only** (or a classic token with `repo`). Optional: **Actions: Read-only** for CI stats and **Dependabot alerts: Read-only** for security alerts — without them those panels say what's missing and everything else works.
    GitHub is restricting the stargazers list to repo admins and collaborators; when it refuses a repo (403), the sync skips that repo's star *history* and says so. Star counts still update.
 2. **Database**: create a Postgres database. [Neon](https://neon.tech)'s free tier works well; Railway, Supabase or a local Docker container work too.
 3. **Configure and run**
@@ -167,6 +190,7 @@ All variables are listed with comments in [`.env.example`](./.env.example).
 |---|---|---|
 | `/` | dashboard password | Overview (`?range=7\|14\|30\|90\|365\|all`) |
 | `/repo/:owner/:name` | dashboard password | Repo detail and notes |
+| `/me` | dashboard password | Your contributions, streaks and followers |
 | `/api/export` | dashboard password | CSV: `?kind=repos\|daily&range=…` |
 | `/api/cron/sync` | `Bearer CRON_SECRET` | Run the sync (Vercel Cron) |
 | `/api/badge/:owner/:name` | public (public repos only) | SVG badge |

@@ -13,9 +13,17 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body>
         <header className="border-b border-zinc-800">
           <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
-            <Link href="/" className="font-semibold tracking-tight">
-              📈 Repo Stats
-            </Link>
+            <nav className="flex items-center gap-5">
+              <Link href="/" className="font-semibold tracking-tight">
+                📈 Repo Stats
+              </Link>
+              <Link href="/" className="text-sm text-zinc-400 hover:text-white">
+                Repositories
+              </Link>
+              <Link href="/me" className="text-sm text-zinc-400 hover:text-white">
+                Your activity
+              </Link>
+            </nav>
             <a
               href="https://docs.github.com/en/rest/metrics/traffic"
               className="hidden text-xs text-zinc-500 hover:text-zinc-300 sm:block"

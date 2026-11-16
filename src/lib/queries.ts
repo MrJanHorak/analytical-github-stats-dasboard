@@ -1,11 +1,18 @@
-import { and, asc, desc, eq, gte, inArray, lt, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, lt, or, sql, type AnyColumn } from "drizzle-orm";
 import { getDb, schema } from "./db";
 import {
+  aggregateContributedRepos,
   aggregateLanguages,
   bucket,
+  ciStats,
+  contributionStreaks,
   cumulativeByDay,
   fillDaily,
+  heatmapWeeks,
+  isOutside,
+  issueFlow,
   joinSeries,
+  weeklyIssueFlow,
   likelyAutomated,
   pivotReferrers,
 } from "./transform";
@@ -26,6 +33,13 @@ const {
   starEvents,
   forkEvents,
   syncRuns,
+  contributionDays,
+  contributionYears,
+  contributionRepos,
+  profileSnapshots,
+  issues,
+  workflowRuns,
+  repoHealth,
 } = schema;
 
 type Totals = { views: number; viewUniques: number; clones: number; cloneUniques: number };
@@ -66,6 +80,70 @@ async function latestWindows(repoId?: number) {
 }
 
 export type RepoRow = Awaited<ReturnType<typeof getOverview>>["repos"][number];
+
+/**
+ * Issues/PRs, Actions runs and health for the range: everything needed by the overview (all your
+ * repos) or one repo's detail page. Only items touched in the range, plus what's open now, are read.
+ */
+async function loadActivity(since: string, until: string, repoId?: number) {
+  const db = getDb();
+  const sinceTs = new Date(since + "T00:00:00Z");
+  const forRepo = (col: AnyColumn) => (repoId === undefined ? undefined : eq(col, repoId));
+  const [issueRows, runRows, healthRows] = await Promise.all([
+    db
+      .select({
+        repoId: issues.repoId,
+        number: issues.number,
+        title: issues.title,
+        isPr: issues.isPr,
+        state: issues.state,
+        author: issues.author,
+        authorAssociation: issues.authorAssociation,
+        isBot: issues.isBot,
+        createdAt: issues.createdAt,
+        closedAt: issues.closedAt,
+        mergedAt: issues.mergedAt,
+      })
+      .from(issues)
+      .where(
+        and(
+          forRepo(issues.repoId),
+          or(gte(issues.createdAt, sinceTs), gte(issues.closedAt, sinceTs), eq(issues.state, "open")),
+        ),
+      ),
+    db
+      .select({
+        repoId: workflowRuns.repoId,
+        repo: repos.fullName,
+        workflow: workflowRuns.workflow,
+        branch: workflowRuns.branch,
+        status: workflowRuns.status,
+        conclusion: workflowRuns.conclusion,
+        createdAt: workflowRuns.createdAt,
+        startedAt: workflowRuns.startedAt,
+        updatedAt: workflowRuns.updatedAt,
+      })
+      .from(workflowRuns)
+      .innerJoin(repos, eq(repos.id, workflowRuns.repoId))
+      .where(and(forRepo(workflowRuns.repoId), gte(workflowRuns.createdAt, sinceTs))),
+    db.select().from(repoHealth).where(forRepo(repoHealth.repoId)),
+  ]);
+  return {
+    issueRows,
+    runRows,
+    healthRows,
+    flow: issueFlow(issueRows, sinceTs),
+    weekly: weeklyIssueFlow(issueRows, since, until),
+    /** True once the activity sync has run for at least one repo */
+    synced: healthRows.some((h) => h.activitySyncedAt),
+    actionsAvailable: healthRows.some((h) => h.actionsAvailable),
+  };
+}
+
+const alertTotal = (h: typeof repoHealth.$inferSelect | undefined) =>
+  !h || h.dependabotHigh === null
+    ? null
+    : (h.dependabotCritical ?? 0) + (h.dependabotHigh ?? 0) + (h.dependabotMedium ?? 0) + (h.dependabotLow ?? 0);
 
 export async function getOverview(rangeDays: number) {
   const db = getDb();
@@ -108,6 +186,13 @@ export async function getOverview(rangeDays: number) {
       db.select({ repoId: repoLoc.repoId, language: repoLoc.language, bytes: repoLoc.nonBlank }).from(repoLoc),
     ]);
 
+  const activity = await loadActivity(since, until);
+  const healthBy = new Map(activity.healthRows.map((h) => [h.repoId, h]));
+  const runsBy = new Map<number, typeof activity.runRows>();
+  for (const r of activity.runRows) {
+    if (!runsBy.has(r.repoId)) runsBy.set(r.repoId, []);
+    runsBy.get(r.repoId)!.push(r);
+  }
   const trafficBy = new Map(traffic.map((t) => [t.repoId, t]));
   const snapBy = new Map(latestSnaps.map((s) => [s.repoId, s]));
   const starsBy = new Map(starsGained.map((s) => [s.repoId, s.n]));
@@ -133,6 +218,12 @@ export async function getOverview(rangeDays: number) {
       forksDelta: forksBy.get(r.id) ?? 0,
       spark: bucket(fillDaily(dailyBy.get(r.id) ?? [], "views", since, until), 60),
       likelyAutomated: likelyAutomated({ views: t?.views ?? 0, clones: t?.clones ?? 0 }),
+      /** GitHub community health %, null when unknown (private repos, or not synced yet) */
+      health: healthBy.get(r.id)?.healthPercentage ?? null,
+      /** Actions pass rate in the range (0–1), null without runs */
+      ciPassRate: runsBy.has(r.id) ? ciStats(runsBy.get(r.id)!, new Date(since + "T00:00:00Z")).passRate : null,
+      /** Open Dependabot alerts, null when unavailable */
+      securityAlerts: alertTotal(healthBy.get(r.id)),
     };
   });
 
@@ -226,6 +317,29 @@ export async function getOverview(rangeDays: number) {
     lastRun: lastRun[0] ?? null,
     previous: prevSince ? prev[0] ?? ZERO : null,
     code,
+    activity: {
+      synced: activity.synced,
+      flow: activity.flow,
+      weekly: activity.weekly,
+      ci: activity.actionsAvailable ? ciStats(activity.runRows, new Date(since + "T00:00:00Z")) : null,
+      security: (() => {
+        const known = activity.healthRows.filter((h) => h.dependabotHigh !== null && ownIds.has(h.repoId));
+        if (!known.length) return null;
+        const sumSev = (k: "dependabotCritical" | "dependabotHigh" | "dependabotMedium" | "dependabotLow") =>
+          known.reduce((a, h) => a + (h[k] ?? 0), 0);
+        return {
+          critical: sumSev("dependabotCritical"),
+          high: sumSev("dependabotHigh"),
+          medium: sumSev("dependabotMedium"),
+          low: sumSev("dependabotLow"),
+          reposChecked: known.length,
+          repos: rows
+            .filter((r) => (r.securityAlerts ?? 0) > 0)
+            .sort((a, b) => (b.securityAlerts ?? 0) - (a.securityAlerts ?? 0))
+            .map((r) => ({ fullName: r.fullName, name: r.name, alerts: r.securityAlerts ?? 0 })),
+        };
+      })(),
+    },
     /** Clones in repos whose clone/view pattern looks automated (CI, mirrors, deploys) — a heuristic */
     automatedClones: rows.filter((r) => r.likelyAutomated).reduce((a, r) => a + r.clones, 0),
     totals: {
@@ -246,6 +360,7 @@ export async function getRepoDetail(owner: string, name: string, rangeDays: numb
   const [repo] = await db.select().from(repos).where(eq(repos.fullName, `${owner}/${name}`)).limit(1);
   if (!repo) return null;
   const { since, until, prevSince } = await windowFor(rangeDays, repo.id);
+  const activity = await loadActivity(since, until, repo.id);
 
   const latestFor = (table: typeof referrers | typeof popularPaths | typeof releaseAssets) =>
     sql`${table.date} = (select max(date) from ${table} where repo_id = ${repo.id})`;
@@ -340,6 +455,19 @@ export async function getRepoDetail(owner: string, name: string, rangeDays: numb
     languages: langs,
     /** Lines of code per language on the default branch; empty until counted */
     loc,
+    activity: {
+      synced: activity.synced,
+      flow: activity.flow,
+      weekly: activity.weekly,
+      ci: activity.actionsAvailable ? ciStats(activity.runRows, new Date(since + "T00:00:00Z")) : null,
+      health: activity.healthRows[0] ?? null,
+      /** Open issues and PRs, newest first */
+      open: activity.issueRows
+        .filter((i) => i.state === "open")
+        .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+        .slice(0, 8)
+        .map((i) => ({ number: i.number, title: i.title, isPr: i.isPr, author: i.author, isBot: i.isBot, outside: isOutside(i), createdAt: i.createdAt })),
+    },
     window14: windows[0] ?? null,
     referrerTrend,
     notes,
@@ -408,4 +536,67 @@ export async function getExportData(kind: "repos" | "daily", rangeDays: number) 
     .innerJoin(repos, eq(repos.id, trafficDaily.repoId))
     .where(gte(trafficDaily.date, since))
     .orderBy(asc(trafficDaily.date), asc(repos.fullName));
+}
+
+/** Your own activity for /me: contribution totals, heatmap, streaks, repos, followers. Null before the first sync. */
+export async function getMe(today = isoDay()) {
+  const db = getDb();
+  const [latest] = await db.select().from(profileSnapshots).orderBy(desc(profileSnapshots.date)).limit(1);
+  if (!latest) return null;
+  const login = latest.login;
+
+  const [years, repoRows, days, followerRows] = await Promise.all([
+    db.select().from(contributionYears).where(eq(contributionYears.login, login)).orderBy(asc(contributionYears.year)),
+    db
+      .select({ repo: contributionRepos.repo, commits: contributionRepos.commits, pullRequests: contributionRepos.pullRequests })
+      .from(contributionRepos)
+      .where(eq(contributionRepos.login, login)),
+    db
+      .select({ date: contributionDays.date, count: contributionDays.count })
+      .from(contributionDays)
+      .where(eq(contributionDays.login, login))
+      .orderBy(asc(contributionDays.date)),
+    db
+      .select({ date: profileSnapshots.date, followers: profileSnapshots.followers, following: profileSnapshots.following })
+      .from(profileSnapshots)
+      .where(eq(profileSnapshots.login, login))
+      .orderBy(asc(profileSnapshots.date)),
+  ]);
+
+  const sum = (k: "commits" | "pullRequests" | "issues" | "reviews" | "restricted" | "total") => years.reduce((a, y) => a + y[k], 0);
+  const repos = aggregateContributedRepos(repoRows, login);
+  const yearAgo = daysAgo(364, today);
+  const monthAgo = followerRows.find((f) => f.date >= daysAgo(30, today)) ?? followerRows[0];
+
+  return {
+    login,
+    since: years[0]?.year ?? null,
+    totals: {
+      commits: sum("commits"),
+      pullRequests: sum("pullRequests"),
+      issues: sum("issues"),
+      reviews: sum("reviews"),
+      restricted: sum("restricted"),
+      total: sum("total"),
+    },
+    years: years.map((y) => ({
+      year: y.year,
+      commits: y.commits,
+      pullRequests: y.pullRequests,
+      issues: y.issues,
+      reviews: y.reviews,
+      total: y.total,
+    })),
+    lastYear: days.filter((d) => d.date >= yearAgo && d.date <= today).reduce((a, d) => a + d.count, 0),
+    reposContributedTo: repos.length,
+    topRepos: repos.slice(0, 10),
+    streaks: contributionStreaks(days, today),
+    heatmap: heatmapWeeks(days.filter((d) => d.date >= daysAgo(380, today)), today),
+    followers: {
+      current: latest.followers,
+      following: latest.following,
+      delta30: latest.followers - (monthAgo?.followers ?? latest.followers),
+      history: followerRows,
+    },
+  };
 }

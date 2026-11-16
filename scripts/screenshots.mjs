@@ -38,6 +38,10 @@ await shoot("referrer-trend", `/repo/${REPO}?range=30`, { section: "Referrer tre
 await shoot("notes-alerts", `/repo/${REPO}?range=90`, { section: "Notes & alerts" });
 await shoot("languages", "/?range=30", { section: "Languages across your repos" });
 await shoot("lines-of-code", "/?range=30", { section: "Lines of code" });
+await shoot("your-activity", "/me", { height: 1300 });
+await shoot("issues-prs", "/?range=90", { section: "Issues & pull requests" });
+await shoot("actions-ci", "/?range=90", { section: "GitHub Actions" });
+await shoot("community-health", `/repo/${REPO}?range=90`, { section: "Community health" });
 await shoot("mobile", "/?range=30", { width: 390, height: 844 });
 
 for (const metric of ["views", "visitors", "stars"]) {

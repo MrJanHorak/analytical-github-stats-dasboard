@@ -12,8 +12,9 @@ import { pack } from "tar-stream";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { schema, setDbForTesting } from "@/lib/db";
 import * as gh from "@/lib/github";
-import { getExportData, getOverview, getRepoDetail } from "@/lib/queries";
+import { getExportData, getMe, getOverview, getRepoDetail } from "@/lib/queries";
 import { runSync } from "@/lib/sync";
+import { syncContributions, yearsToFetch } from "@/lib/sync-contributions";
 import { toCsv } from "@/lib/transform";
 import { daysAgo, isoDay } from "@/lib/utils";
 
@@ -27,6 +28,12 @@ vi.mock("@/lib/github", () => ({
   fetchBranchSha: vi.fn(),
   fetchTarball: vi.fn(),
   fetchCommitActivity: vi.fn(),
+  fetchViewer: vi.fn(),
+  fetchIssues: vi.fn(),
+  fetchWorkflowRuns: vi.fn(),
+  fetchCommunityHealth: vi.fn(),
+  fetchDependabotAlerts: vi.fn(),
+  fetchContributions: vi.fn(),
 }));
 const m = vi.mocked(gh);
 
@@ -38,6 +45,27 @@ async function tarball(files: Record<string, string>) {
   const chunks: Buffer[] = [];
   for await (const c of p) chunks.push(c as Buffer);
   return Readable.from([gzipSync(Buffer.concat(chunks))]);
+}
+/** A year of contributions: one commit-day on 1 Feb and 2 Feb, two repos. */
+function contributions(year: number, commits = 2) {
+  return {
+    commits,
+    pullRequests: 1,
+    issues: 3,
+    reviews: 4,
+    reposWithCommits: 2,
+    restricted: 0,
+    total: commits + 8,
+    days: [
+      { date: `${year - 1}-12-31`, count: 99 }, // calendar weeks can spill into the previous year — ignored
+      { date: `${year}-02-01`, count: 1 },
+      { date: `${year}-02-02`, count: 1 },
+    ],
+    repos: [
+      { repo: "jan/alpha", commits, pullRequests: 0 },
+      { repo: "someone/lib", commits: 0, pullRequests: 1 },
+    ],
+  };
 }
 const lines = (n: number) => "x();\n\n".repeat(n); // n non-blank lines (+ n blank ones)
 
@@ -110,6 +138,12 @@ beforeEach(() => {
     { forkId: 500, fullName: "someone/alpha", owner: "someone", stars: 1, createdAt: ts(5) },
   ]);
   m.fetchLanguages.mockResolvedValue({ TypeScript: 9000, CSS: 1000 });
+  m.fetchViewer.mockResolvedValue({ login: "jan", createdAt: `${new Date().getUTCFullYear()}-01-05T00:00:00Z`, followers: 10, following: 3, publicRepos: 2 });
+  m.fetchContributions.mockResolvedValue(contributions(new Date().getUTCFullYear()));
+  m.fetchIssues.mockResolvedValue([]);
+  m.fetchWorkflowRuns.mockResolvedValue([]);
+  m.fetchCommunityHealth.mockResolvedValue(null);
+  m.fetchDependabotAlerts.mockResolvedValue(null);
   m.fetchBranchSha.mockResolvedValue("sha-1");
   m.fetchTarball.mockImplementation(() =>
     tarball({ "src/a.ts": lines(80), "src/b.css": lines(20), "package-lock.json": lines(5000), "README.md": lines(50) }),
@@ -369,5 +403,194 @@ describe("code stats", () => {
     expect(m.fetchTarball).not.toHaveBeenCalled();
     const big = await pg.query<{ lines_of_code: number | null }>("select lines_of_code from repos where id = 1");
     expect(big.rows[0].lines_of_code).toBeNull();
+  });
+});
+
+describe("contributions", () => {
+  it("works out which years still need fetching", () => {
+    const created = new Date("2023-06-01T00:00:00Z");
+    const now = new Date("2026-03-01T00:00:00Z");
+    expect(yearsToFetch(created, now, new Map())).toEqual([2026, 2025, 2024, 2023]);
+    const synced = new Map([
+      [2023, new Date("2024-02-01T00:00:00Z")], // final
+      [2024, new Date("2024-12-30T00:00:00Z")], // synced before the year ended → refetch once
+      [2025, new Date("2026-01-10T00:00:00Z")], // final
+      [2026, new Date("2026-02-28T00:00:00Z")], // current year → always
+    ]);
+    expect(yearsToFetch(created, now, synced)).toEqual([2026, 2024]);
+  });
+
+  it("backfills every year once, then only the current one, and powers /me", async () => {
+    await pg.exec("delete from contribution_years; delete from contribution_days; delete from contribution_repos; delete from profile_snapshots");
+    m.fetchViewer.mockResolvedValue({ login: "jan", createdAt: "2024-03-10T00:00:00Z", followers: 12, following: 3, publicRepos: 9 });
+    m.fetchContributions.mockImplementation(async (from: Date) => contributions(from.getUTCFullYear(), from.getUTCFullYear() - 2020));
+    const now = new Date("2026-02-03T12:00:00Z");
+
+    const first = await syncContributions({ now });
+    expect(first).toEqual({ login: "jan", yearsFetched: 3, yearsPending: 0 });
+    // The first year starts at account creation, the current one ends now
+    const calls = m.fetchContributions.mock.calls.map(([f, t]) => [f.toISOString(), t.toISOString()]);
+    expect(calls).toContainEqual(["2024-03-10T00:00:00.000Z", "2024-12-31T23:59:59.000Z"]);
+    expect(calls).toContainEqual(["2026-01-01T00:00:00.000Z", "2026-02-03T12:00:00.000Z"]);
+    const days = await pg.query<{ n: number }>("select count(*)::int as n from contribution_days where count = 99");
+    expect(days.rows[0].n).toBe(0);
+
+    m.fetchContributions.mockClear();
+    const second = await syncContributions({ now: new Date("2026-02-04T12:00:00Z") });
+    expect(second.yearsFetched).toBe(1);
+    expect(m.fetchContributions.mock.calls[0][0].toISOString()).toBe("2026-01-01T00:00:00.000Z");
+
+    // Out of time → nothing fetched, reported as pending
+    expect(await syncContributions({ now, outOfTime: () => true })).toMatchObject({ yearsFetched: 0, yearsPending: 1 });
+
+    const me = (await getMe(isoDay(now)))!;
+    expect(me.login).toBe("jan");
+    // commits per year = year - 2020 → 4 + 5 + 6
+    expect(me.totals).toMatchObject({ commits: 15, pullRequests: 3, issues: 9, reviews: 12, total: 39 });
+    expect(me.years.map((y) => y.year)).toEqual([2024, 2025, 2026]);
+    expect(me.reposContributedTo).toBe(2);
+    expect(me.topRepos[0]).toMatchObject({ repo: "jan/alpha", commits: 15, own: true });
+    expect(me.streaks).toMatchObject({ current: 2, longest: 2 }); // 2026-02-01 and -02, "today" is 02-03
+    expect(me.followers).toMatchObject({ current: 12 });
+    expect(me.heatmap.at(-1)!.some((c) => c?.date === "2026-02-02" && c.count === 1)).toBe(true);
+  });
+
+  it("reports a failure without breaking the rest of the sync", async () => {
+    m.fetchViewer.mockRejectedValue(new Error("Bad credentials"));
+    const r = await runSync();
+    expect(r.errors).toEqual([{ repo: "contributions", error: "Bad credentials" }]);
+    expect(r.reposSynced).toBe(1);
+    expect(r.contributionYearsPending).toBeNull();
+  });
+});
+
+describe("repo activity", () => {
+  const issue = (number: number, o: Record<string, unknown> = {}) => ({
+    number,
+    isPr: false,
+    title: `Issue ${number}`,
+    author: "alice",
+    authorAssociation: "NONE",
+    isBot: false,
+    state: "open" as const,
+    createdAt: new Date(Date.now() - 3 * 86_400_000).toISOString(),
+    closedAt: null,
+    mergedAt: null,
+    ...o,
+  });
+  const runAt = (id: number, conclusion: string | null, hoursAgo: number) => ({
+    runId: id,
+    workflow: "CI",
+    event: "push",
+    branch: "main",
+    status: conclusion ? "completed" : "in_progress",
+    conclusion,
+    createdAt: new Date(Date.now() - hoursAgo * 3_600_000).toISOString(),
+    startedAt: new Date(Date.now() - hoursAgo * 3_600_000).toISOString(),
+    updatedAt: new Date(Date.now() - hoursAgo * 3_600_000 + 120_000).toISOString(),
+  });
+  const health = { percentage: 71, readme: true, license: true, codeOfConduct: false, contributing: false, issueTemplate: true, prTemplate: false, description: true };
+
+  beforeAll(async () => {
+    await pg.exec("delete from issues; delete from workflow_runs; delete from repo_health");
+  });
+
+  it("backfills issues, 90 days of runs, health and Dependabot on the first sync; skips forks and archived repos", async () => {
+    m.listOwnedRepos.mockResolvedValue([
+      repo(1, "alpha"),
+      repo(2, "archived-one", { archived: true }),
+      repo(5, "forked", { fork: true }),
+    ] as never);
+    m.fetchIssues.mockResolvedValue([issue(1), issue(2, { isPr: true, author: "jan", authorAssociation: "OWNER" })]);
+    m.fetchWorkflowRuns.mockResolvedValue([runAt(100, "success", 30), runAt(101, null, 1)]);
+    m.fetchCommunityHealth.mockResolvedValue(health);
+    m.fetchDependabotAlerts.mockResolvedValue({ critical: 0, high: 2, medium: 1, low: 0 });
+
+    const before = Date.now();
+    const r = await runSync();
+    expect(r.errors).toEqual([]);
+    expect(r.activityPending).toBe(0);
+    expect(m.fetchIssues).toHaveBeenCalledTimes(1); // alpha only
+    expect(m.fetchIssues).toHaveBeenCalledWith("jan", "alpha", null, true);
+    const runsSince = m.fetchWorkflowRuns.mock.calls[0][2] as Date;
+    expect(Math.round((before - runsSince.getTime()) / 86_400_000)).toBe(90);
+
+    const h = await pg.query<Record<string, unknown>>("select health_percentage, has_license, dependabot_high, actions_available from repo_health where repo_id = 1");
+    expect(h.rows[0]).toEqual({ health_percentage: 71, has_license: true, dependabot_high: 2, actions_available: true });
+    const counts = await pg.query<{ i: number; w: number }>("select (select count(*)::int from issues) as i, (select count(*)::int from workflow_runs) as w");
+    expect(counts.rows[0]).toEqual({ i: 2, w: 2 });
+  });
+
+  it("then fetches incrementally, updates changed items and keeps health until the repo is pushed", async () => {
+    m.listOwnedRepos.mockResolvedValue([repo(1, "alpha")] as never);
+    m.fetchIssues.mockResolvedValue([issue(1, { state: "closed", closedAt: new Date().toISOString() })]);
+    m.fetchWorkflowRuns.mockResolvedValue([runAt(101, "failure", 1)]); // the in-progress run finished
+    m.fetchDependabotAlerts.mockResolvedValue({ critical: 1, high: 2, medium: 1, low: 0 });
+
+    const prev = await pg.query<{ t: Date }>("select issues_synced_at as t from repo_health where repo_id = 1");
+    expect((await runSync()).errors).toEqual([]);
+    const since = m.fetchIssues.mock.calls[0][2] as Date;
+    expect(prev.rows[0].t.getTime() - since.getTime()).toBe(10 * 60_000);
+    expect(m.fetchCommunityHealth).not.toHaveBeenCalled();
+
+    const closed = await pg.query<{ state: string }>("select state from issues where repo_id = 1 and number = 1");
+    expect(closed.rows[0].state).toBe("closed");
+    const run = await pg.query<{ conclusion: string }>("select conclusion from workflow_runs where run_id = 101");
+    expect(run.rows[0].conclusion).toBe("failure");
+    const h = await pg.query<{ health_percentage: number; dependabot_critical: number }>("select health_percentage, dependabot_critical from repo_health where repo_id = 1");
+    expect(h.rows[0]).toEqual({ health_percentage: 71, dependabot_critical: 1 }); // health kept, alerts refreshed
+
+    m.listOwnedRepos.mockResolvedValue([repo(1, "alpha", { pushed_at: new Date().toISOString() })] as never);
+    m.fetchCommunityHealth.mockResolvedValue({ ...health, percentage: 100 });
+    await runSync();
+    const h2 = await pg.query<{ health_percentage: number }>("select health_percentage from repo_health where repo_id = 1");
+    expect(h2.rows[0].health_percentage).toBe(100);
+  });
+
+  it("records missing Actions / Dependabot permissions without errors", async () => {
+    m.listOwnedRepos.mockResolvedValue([repo(1, "alpha")] as never);
+    m.fetchWorkflowRuns.mockResolvedValue(null);
+    m.fetchDependabotAlerts.mockResolvedValue(null);
+    const r = await runSync();
+    expect(r.errors).toEqual([]);
+    const h = await pg.query<{ actions_available: boolean; dependabot_high: number | null; runs_synced_at: Date | null }>(
+      "select actions_available, dependabot_high, runs_synced_at from repo_health where repo_id = 1",
+    );
+    expect(h.rows[0].actions_available).toBe(false);
+    expect(h.rows[0].dependabot_high).toBeNull();
+    expect(h.rows[0].runs_synced_at).not.toBeNull(); // previous marker kept for when access returns
+  });
+
+  it("leaves activity for the next run when out of time, and reports failures per repo", async () => {
+    m.listOwnedRepos.mockResolvedValue([repo(1, "alpha")] as never);
+    const r = await runSync({ timeBudgetMs: -1 });
+    expect(r.activityPending).toBe(1);
+    expect(m.fetchIssues).not.toHaveBeenCalled();
+
+    m.fetchIssues.mockRejectedValue(new Error("boom"));
+    const r2 = await runSync();
+    expect(r2.errors).toEqual([{ repo: "jan/alpha (activity)", error: "boom" }]);
+  });
+  it("feeds the overview and repo detail", async () => {
+    m.listOwnedRepos.mockResolvedValue([repo(1, "alpha")] as never);
+    m.fetchWorkflowRuns.mockResolvedValue([]);
+    m.fetchDependabotAlerts.mockResolvedValue({ critical: 0, high: 1, medium: 0, low: 2 });
+    expect((await runSync()).errors).toEqual([]);
+
+    const o = await getOverview(30);
+    expect(o.activity.synced).toBe(true);
+    expect(o.activity.flow).toMatchObject({ issuesOpened: 1, issuesClosed: 1, prsOpened: 1, openPrs: 1, outsideItems: 1 });
+    expect(o.activity.flow.outsideContributors).toEqual([{ login: "alice", count: 1 }]);
+    expect(o.activity.ci).toMatchObject({ runs: 2, passed: 1, failed: 1, passRate: 0.5 });
+    expect(o.activity.ci!.workflows[0]).toMatchObject({ workflow: "CI", repo: "jan/alpha" });
+    expect(o.activity.security).toMatchObject({ critical: 0, high: 1, low: 2, reposChecked: 1 });
+    expect(o.activity.security!.repos).toEqual([{ fullName: "jan/alpha", name: "alpha", alerts: 3 }]);
+    const row = o.repos.find((r) => r.id === 1)!;
+    expect(row).toMatchObject({ health: 100, ciPassRate: 0.5, securityAlerts: 3 });
+
+    const d = (await getRepoDetail("jan", "alpha", 30))!;
+    expect(d.activity.health).toMatchObject({ healthPercentage: 100, hasLicense: true });
+    expect(d.activity.open).toEqual([expect.objectContaining({ number: 2, isPr: true, outside: false })]);
+    expect(d.activity.ci?.runs).toBe(2);
   });
 });

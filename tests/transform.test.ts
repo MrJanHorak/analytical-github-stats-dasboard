@@ -1,16 +1,26 @@
 import { describe, expect, it } from "vitest";
 import { compact, renderBadge } from "@/lib/badge";
 import {
+  aggregateContributedRepos,
   aggregateLanguages,
   bucket,
+  ciStats,
+  contributionStreaks,
   crossedMilestones,
   cumulativeByDay,
   dayRange,
   detectSpike,
   fillDaily,
+  heatmapWeeks,
+  isOutside,
+  issueFlow,
   joinSeries,
   likelyAutomated,
+  median,
   mergeTraffic,
+  monthlyCodeFrequency,
+  shortDuration,
+  weeklyIssueFlow,
   pctChange,
   pivotReferrers,
   toCsv,
@@ -206,5 +216,168 @@ describe("likelyAutomated", () => {
     expect(likelyAutomated({ views: 0, clones: 5 })).toBe(false);
     expect(likelyAutomated({ views: 200, clones: 40 })).toBe(false);
     expect(likelyAutomated({ views: 10, clones: 20 })).toBe(false);
+  });
+});
+
+describe("contributionStreaks", () => {
+  const d = (date: string, count = 1) => ({ date, count });
+  it("finds the longest run and a current streak that may not include today yet", () => {
+    const days = [d("2026-01-01"), d("2026-01-02"), d("2026-01-03"), d("2026-01-04", 0), d("2026-01-09"), d("2026-01-10")];
+    expect(contributionStreaks(days, "2026-01-11")).toEqual({ current: 2, longest: 3, longestEnd: "2026-01-03" });
+    expect(contributionStreaks(days, "2026-01-10")).toMatchObject({ current: 2 });
+    expect(contributionStreaks(days, "2026-01-12")).toMatchObject({ current: 0 });
+    expect(contributionStreaks([], "2026-01-12")).toEqual({ current: 0, longest: 0, longestEnd: null });
+  });
+  it("crosses month and year boundaries", () => {
+    expect(contributionStreaks([d("2025-12-31"), d("2026-01-01")], "2026-01-01")).toMatchObject({ current: 2, longest: 2 });
+  });
+});
+
+describe("heatmapWeeks", () => {
+  it("lays out Sunday-first weeks ending with the week of `until`, with quartile levels", () => {
+    // 2026-11-15 is a Sunday
+    const weeks = heatmapWeeks([{ date: "2026-11-15", count: 8 }, { date: "2026-11-09", count: 2 }, { date: "2026-11-10", count: 7 }], "2026-11-15", 2);
+    expect(weeks).toHaveLength(2);
+    expect(weeks[0][0]!.date).toBe("2026-11-08");
+    expect(weeks[0].map((c) => c!.level)).toEqual([0, 1, 4, 0, 0, 0, 0]);
+    expect(weeks[1][0]).toEqual({ date: "2026-11-15", count: 8, level: 4 });
+    expect(weeks[1].slice(1)).toEqual([null, null, null, null, null, null]); // the future
+  });
+});
+
+describe("aggregateContributedRepos", () => {
+  it("sums years per repo, flags your own repos and sorts busiest first", () => {
+    const out = aggregateContributedRepos(
+      [
+        { repo: "jan/a", commits: 5, pullRequests: 0 },
+        { repo: "other/b", commits: 2, pullRequests: 9 },
+        { repo: "jan/a", commits: 1, pullRequests: 1 },
+      ],
+      "Jan",
+    );
+    expect(out).toEqual([
+      { repo: "other/b", commits: 2, pullRequests: 9, own: false },
+      { repo: "jan/a", commits: 6, pullRequests: 1, own: true },
+    ]);
+  });
+});
+
+describe("monthlyCodeFrequency", () => {
+  it("buckets weeks into months with a running net total", () => {
+    const jan5 = Date.UTC(2026, 0, 4) / 1000;
+    const jan12 = Date.UTC(2026, 0, 11) / 1000;
+    const feb1 = Date.UTC(2026, 1, 1) / 1000;
+    expect(monthlyCodeFrequency([[jan5, 100, -10], [jan12, 50, 0], [feb1, 5, -45]])).toEqual([
+      { date: "2026-01-01", additions: 150, deletions: 10, net: 140 },
+      { date: "2026-02-01", additions: 5, deletions: 45, net: 100 },
+    ]);
+  });
+});
+
+const at = (s: string) => new Date(s + (s.length === 10 ? "T00:00:00Z" : "Z"));
+
+describe("median", () => {
+  it("handles odd, even and empty lists", () => {
+    expect(median([5, 1, 3])).toBe(3);
+    expect(median([4, 1, 3, 2])).toBe(2.5);
+    expect(median([])).toBeNull();
+  });
+});
+
+describe("issueFlow", () => {
+  const item = (o: Partial<Parameters<typeof issueFlow>[0][number]>) => ({
+    isPr: false,
+    state: "open",
+    author: "jan",
+    authorAssociation: "OWNER",
+    isBot: false,
+    createdAt: at("2026-11-01"),
+    closedAt: null,
+    mergedAt: null,
+    ...o,
+  });
+  const items = [
+    item({ state: "closed", createdAt: at("2026-11-01T00:00:00"), closedAt: at("2026-11-01T10:00:00") }), // 10h
+    item({ state: "closed", createdAt: at("2026-10-01"), closedAt: at("2026-11-03") }), // opened before range
+    item({ author: "alice", authorAssociation: "NONE" }), // outside, open
+    item({ isPr: true, author: "alice", authorAssociation: "CONTRIBUTOR", state: "closed", createdAt: at("2026-11-02T00:00:00"), mergedAt: at("2026-11-02T04:00:00"), closedAt: at("2026-11-02T04:00:00") }),
+    item({ isPr: true, author: "bob", authorAssociation: "FIRST_TIME_CONTRIBUTOR", state: "closed", closedAt: at("2026-11-04") }), // closed unmerged
+    item({ isPr: true, author: "dependabot[bot]", authorAssociation: "NONE", isBot: true }), // bot, open
+    item({ createdAt: at("2026-09-01") }), // old open issue
+  ];
+
+  it("counts flow in range, current open items, medians and outside contributors", () => {
+    expect(issueFlow(items, at("2026-11-01"))).toEqual({
+      issuesOpened: 2,
+      issuesClosed: 2,
+      prsOpened: 3,
+      prsMerged: 1,
+      prsClosedUnmerged: 1,
+      openIssues: 2,
+      openPrs: 1,
+      medianHoursToClose: (10 + 33 * 24) / 2,
+      medianHoursToMerge: 4,
+      outsideItems: 3,
+      outsideContributors: [
+        { login: "alice", count: 2 },
+        { login: "bob", count: 1 },
+      ],
+      botItems: 1,
+    });
+  });
+
+  it("treats bots and the team as not outside", () => {
+    expect(isOutside({ authorAssociation: "NONE", isBot: true })).toBe(false);
+    expect(isOutside({ authorAssociation: "COLLABORATOR", isBot: false })).toBe(false);
+    expect(isOutside({ authorAssociation: "CONTRIBUTOR", isBot: false })).toBe(true);
+  });
+
+  it("buckets opened vs closed into Monday weeks", () => {
+    // 2026-11-02 is a Monday
+    expect(weeklyIssueFlow(items, "2026-11-02", "2026-11-15")).toEqual([
+      { date: "2026-11-02", opened: 1, closed: 3 },
+      { date: "2026-11-09", opened: 0, closed: 0 },
+    ]);
+  });
+});
+
+describe("ciStats", () => {
+  const run = (workflow: string, conclusion: string | null, created: string, seconds = 60, status = "completed") => ({
+    workflow,
+    status,
+    conclusion,
+    createdAt: at(created),
+    startedAt: at(created),
+    updatedAt: new Date(at(created).getTime() + seconds * 1000),
+  });
+  it("computes pass rate without cancelled/skipped runs, durations and per-workflow stats", () => {
+    const s = ciStats(
+      [
+        run("CI", "success", "2026-11-10", 100),
+        run("CI", "failure", "2026-11-12", 300),
+        run("CI", "cancelled", "2026-11-13", 5),
+        run("CI", null, "2026-11-14", 0, "in_progress"),
+        run("Deploy", "success", "2026-11-11", 40),
+        run("CI", "failure", "2026-10-01"), // before range
+      ],
+      at("2026-11-01"),
+    );
+    expect(s).toMatchObject({ runs: 5, passed: 2, failed: 1, medianSeconds: 100 });
+    expect(s.passRate).toBeCloseTo(2 / 3);
+    expect(s.workflows.map((w) => [w.workflow, w.runs, w.passRate, w.last.conclusion])).toEqual([
+      ["CI", 4, 0.5, "in_progress"],
+      ["Deploy", 1, 1, "success"],
+    ]);
+    expect(s.recentFailures).toHaveLength(1);
+    expect(ciStats([], at("2026-11-01")).passRate).toBeNull();
+  });
+});
+
+describe("shortDuration", () => {
+  it("picks minutes, hours or days", () => {
+    expect(shortDuration(0.25)).toBe("15m");
+    expect(shortDuration(5.04)).toBe("5h");
+    expect(shortDuration(72)).toBe("3d");
+    expect(shortDuration(null)).toBe("—");
   });
 });

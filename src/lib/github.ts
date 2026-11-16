@@ -123,3 +123,296 @@ export async function fetchCommitActivity(owner: string, repo: string) {
   const res = await getOctokit().rest.repos.getCommitActivityStats({ owner, repo });
   return Array.isArray(res.data) ? res.data : [];
 }
+
+/** The token's own account: login, creation date and follower counts. */
+export async function fetchViewer() {
+  const { data } = await getOctokit().rest.users.getAuthenticated();
+  return {
+    login: data.login,
+    createdAt: data.created_at,
+    followers: data.followers,
+    following: data.following,
+    publicRepos: data.public_repos,
+  };
+}
+
+export type ContributionYear = {
+  commits: number;
+  pullRequests: number;
+  issues: number;
+  reviews: number;
+  reposWithCommits: number;
+  restricted: number;
+  total: number;
+  days: { date: string; count: number }[];
+  repos: { repo: string; commits: number; pullRequests: number }[];
+};
+
+const CONTRIBUTIONS_QUERY = /* GraphQL */ `
+  query ($from: DateTime!, $to: DateTime!) {
+    viewer {
+      contributionsCollection(from: $from, to: $to) {
+        totalCommitContributions
+        totalIssueContributions
+        totalPullRequestContributions
+        totalPullRequestReviewContributions
+        totalRepositoriesWithContributedCommits
+        restrictedContributionsCount
+        contributionCalendar {
+          totalContributions
+          weeks { contributionDays { date contributionCount } }
+        }
+        commitContributionsByRepository(maxRepositories: 100) {
+          repository { nameWithOwner }
+          contributions { totalCount }
+        }
+        pullRequestContributionsByRepository(maxRepositories: 100) {
+          repository { nameWithOwner }
+          contributions { totalCount }
+        }
+      }
+    }
+  }
+`;
+
+type ByRepo = { repository: { nameWithOwner: string }; contributions: { totalCount: number } }[];
+type ContributionsResponse = {
+  viewer: {
+    contributionsCollection: {
+      totalCommitContributions: number;
+      totalIssueContributions: number;
+      totalPullRequestContributions: number;
+      totalPullRequestReviewContributions: number;
+      totalRepositoriesWithContributedCommits: number;
+      restrictedContributionsCount: number;
+      contributionCalendar: { totalContributions: number; weeks: { contributionDays: { date: string; contributionCount: number }[] }[] };
+      commitContributionsByRepository: ByRepo;
+      pullRequestContributionsByRepository: ByRepo;
+    };
+  };
+};
+
+/**
+ * The token user's contributions between two instants (GraphQL; GitHub allows at most one year
+ * per query). Includes private contributions the token can see; others only in `restricted`.
+ */
+export async function fetchContributions(from: Date, to: Date): Promise<ContributionYear> {
+  const res = await getOctokit().graphql<ContributionsResponse>(CONTRIBUTIONS_QUERY, {
+    from: from.toISOString(),
+    to: to.toISOString(),
+  });
+  const c = res.viewer.contributionsCollection;
+  const repos = new Map<string, { repo: string; commits: number; pullRequests: number }>();
+  const add = (list: ByRepo, key: "commits" | "pullRequests") => {
+    for (const r of list) {
+      const name = r.repository.nameWithOwner;
+      const cur = repos.get(name) ?? { repo: name, commits: 0, pullRequests: 0 };
+      cur[key] += r.contributions.totalCount;
+      repos.set(name, cur);
+    }
+  };
+  add(c.commitContributionsByRepository, "commits");
+  add(c.pullRequestContributionsByRepository, "pullRequests");
+  return {
+    commits: c.totalCommitContributions,
+    pullRequests: c.totalPullRequestContributions,
+    issues: c.totalIssueContributions,
+    reviews: c.totalPullRequestReviewContributions,
+    reposWithCommits: c.totalRepositoriesWithContributedCommits,
+    restricted: c.restrictedContributionsCount,
+    total: c.contributionCalendar.totalContributions,
+    days: c.contributionCalendar.weeks.flatMap((w) => w.contributionDays.map((d) => ({ date: d.date, count: d.contributionCount }))),
+    repos: [...repos.values()],
+  };
+}
+
+// --- Repo activity (M3.7): issues & PRs, Actions runs, community health, Dependabot ------------
+
+const statusOf = (e: unknown) => (e as { status?: unknown } | null)?.status;
+
+export type IssueItem = {
+  number: number;
+  isPr: boolean;
+  title: string;
+  author: string | null;
+  authorAssociation: string;
+  isBot: boolean;
+  state: "open" | "closed";
+  createdAt: string;
+  closedAt: string | null;
+  mergedAt: string | null;
+};
+
+/**
+ * Issues and pull requests (GitHub's issues list includes both) updated since `since`, or all of
+ * them when `since` is null. One request per 100 items; usually a single empty page per day.
+ */
+export async function fetchIssues(owner: string, repo: string, since: Date | null, hasIssues = true): Promise<IssueItem[]> {
+  const octokit = getOctokit();
+  if (!hasIssues) return fetchPullsOnly(owner, repo, since);
+  let rows;
+  try {
+    rows = await octokit.paginate(octokit.rest.issues.listForRepo, {
+    owner,
+    repo,
+    state: "all",
+    sort: "updated",
+    direction: "asc",
+    per_page: 100,
+    ...(since ? { since: since.toISOString() } : {}),
+    });
+  } catch (e) {
+    if (statusOf(e) === 410) return fetchPullsOnly(owner, repo, since); // issues turned off
+    throw e;
+  }
+  return rows.map((i) => ({
+    number: i.number,
+    isPr: !!i.pull_request,
+    title: i.title.slice(0, 300),
+    author: i.user?.login ?? null,
+    authorAssociation: i.author_association ?? "NONE",
+    isBot: i.user?.type === "Bot" || !!i.user?.login?.endsWith("[bot]"),
+    state: i.state === "closed" ? "closed" : "open",
+    createdAt: i.created_at,
+    closedAt: i.closed_at ?? null,
+    mergedAt: i.pull_request?.merged_at ?? null,
+  }));
+}
+
+/** Pull requests only, for repos with issues turned off (the pulls list has no `since`: newest first, stop early). */
+async function fetchPullsOnly(owner: string, repo: string, since: Date | null): Promise<IssueItem[]> {
+  const octokit = getOctokit();
+  const out: IssueItem[] = [];
+  for await (const res of octokit.paginate.iterator(octokit.rest.pulls.list, {
+    owner,
+    repo,
+    state: "all",
+    sort: "updated",
+    direction: "desc",
+    per_page: 100,
+  })) {
+    for (const p of res.data) {
+      if (since && new Date(p.updated_at) < since) return out;
+      out.push({
+        number: p.number,
+        isPr: true,
+        title: p.title.slice(0, 300),
+        author: p.user?.login ?? null,
+        authorAssociation: p.author_association ?? "NONE",
+        isBot: p.user?.type === "Bot" || !!p.user?.login?.endsWith("[bot]"),
+        state: p.state === "closed" ? "closed" : "open",
+        createdAt: p.created_at,
+        closedAt: p.closed_at ?? null,
+        mergedAt: p.merged_at ?? null,
+      });
+    }
+  }
+  return out;
+}
+
+export type WorkflowRunItem = {
+  runId: number;
+  workflow: string;
+  event: string;
+  branch: string | null;
+  status: string;
+  conclusion: string | null;
+  createdAt: string;
+  startedAt: string | null;
+  updatedAt: string;
+};
+
+/** Max pages of Actions runs per sync (GitHub caps filtered run lists at 1,000 anyway). */
+const MAX_RUN_PAGES = 10;
+
+/**
+ * GitHub Actions runs created at or after `since`. Returns null when the token can't read Actions
+ * (needs the "Actions: Read-only" permission) or Actions is unavailable for the repo.
+ */
+export async function fetchWorkflowRuns(owner: string, repo: string, since: Date): Promise<WorkflowRunItem[] | null> {
+  const octokit = getOctokit();
+  const out: WorkflowRunItem[] = [];
+  try {
+    let page = 0;
+    for await (const res of octokit.paginate.iterator(octokit.rest.actions.listWorkflowRunsForRepo, {
+      owner,
+      repo,
+      per_page: 100,
+      created: `>=${since.toISOString().slice(0, 19)}Z`,
+      exclude_pull_requests: true,
+    })) {
+      for (const r of res.data) {
+        out.push({
+          runId: r.id,
+          workflow: r.name ?? r.path ?? "workflow",
+          event: r.event,
+          branch: r.head_branch ?? null,
+          status: r.status ?? "unknown",
+          conclusion: r.conclusion ?? null,
+          createdAt: r.created_at,
+          startedAt: r.run_started_at ?? null,
+          updatedAt: r.updated_at,
+        });
+      }
+      if (++page >= MAX_RUN_PAGES) break;
+    }
+  } catch (e) {
+    if (statusOf(e) === 403 || statusOf(e) === 404) return null;
+    throw e;
+  }
+  return out;
+}
+
+export type CommunityHealth = {
+  percentage: number | null;
+  readme: boolean;
+  license: boolean;
+  codeOfConduct: boolean;
+  contributing: boolean;
+  issueTemplate: boolean;
+  prTemplate: boolean;
+  description: boolean;
+};
+
+/** GitHub's community profile (health %, README, license, …). Null where GitHub has none (private repos). */
+export async function fetchCommunityHealth(owner: string, repo: string): Promise<CommunityHealth | null> {
+  try {
+    const { data } = await getOctokit().rest.repos.getCommunityProfileMetrics({ owner, repo });
+    const f = data.files;
+    return {
+      percentage: data.health_percentage ?? null,
+      readme: !!f.readme,
+      license: !!f.license,
+      codeOfConduct: !!(f.code_of_conduct ?? f.code_of_conduct_file),
+      contributing: !!f.contributing,
+      issueTemplate: !!f.issue_template,
+      prTemplate: !!f.pull_request_template,
+      description: !!data.description,
+    };
+  } catch (e) {
+    if (statusOf(e) === 404 || statusOf(e) === 403) return null;
+    throw e;
+  }
+}
+
+export type DependabotCounts = { critical: number; high: number; medium: number; low: number };
+
+/**
+ * Open Dependabot alerts by severity. Null when the token can't read them ("Dependabot alerts:
+ * Read-only" permission) or alerts are disabled for the repo — GitHub answers 403/404 for both.
+ */
+export async function fetchDependabotAlerts(owner: string, repo: string): Promise<DependabotCounts | null> {
+  const octokit = getOctokit();
+  try {
+    const alerts = await octokit.paginate(octokit.rest.dependabot.listAlertsForRepo, { owner, repo, state: "open", per_page: 100 });
+    const counts: DependabotCounts = { critical: 0, high: 0, medium: 0, low: 0 };
+    for (const a of alerts) {
+      const sev = a.security_advisory?.severity ?? a.security_vulnerability?.severity;
+      if (sev && sev in counts) counts[sev as keyof DependabotCounts]++;
+    }
+    return counts;
+  } catch (e) {
+    if (statusOf(e) === 403 || statusOf(e) === 404) return null;
+    throw e;
+  }
+}

@@ -12,6 +12,8 @@ import {
   listOwnedRepos,
 } from "./github";
 import { countTarball } from "./loc";
+import { activityMarkers, syncRepoActivity } from "./sync-activity";
+import { syncContributions } from "./sync-contributions";
 import { mergeTraffic } from "./transform";
 import { isoDay, mapLimit } from "./utils";
 
@@ -41,6 +43,10 @@ export type SyncResult = {
   historyPending: number;
   /** Repos whose languages / lines of code still need (re)computing next run (time budget ran out) */
   codeStatsPending: number;
+  /** Repos whose issues / Actions runs / health weren't refreshed this run (time budget ran out) */
+  activityPending: number;
+  /** Years of your contribution history still to backfill (time budget); null if it couldn't be fetched */
+  contributionYearsPending: number | null;
   /** New alerts recorded this run (spikes, star bursts, milestones) */
   alertsCreated: number;
   /**
@@ -78,13 +84,16 @@ export async function runSync(opts: SyncOptions = {}): Promise<SyncResult> {
   let historyPending = 0;
   const starHistoryUnavailable: string[] = [];
   let codeStatsPending = 0;
+  let contributionYearsPending: number | null = null;
+  let activityPending = 0;
 
   try {
     const owned = await listOwnedRepos();
-    const [starCounts, forkCounts, codeStatsFor] = await Promise.all([
+    const [starCounts, forkCounts, codeStatsFor, activityFor] = await Promise.all([
       countBy(starEvents),
       countBy(forkEvents),
       codeStatsMarkers(),
+      activityMarkers(),
     ]);
 
     for (const r of owned) await upsertRepoAndSnapshot(r, today);
@@ -103,6 +112,13 @@ export async function runSync(opts: SyncOptions = {}): Promise<SyncResult> {
         }
       },
     );
+
+    // Phase 1b — your own contributions + followers (cheap after the one-time backfill).
+    try {
+      contributionYearsPending = (await syncContributions({ outOfTime })).yearsPending;
+    } catch (e) {
+      errors.push({ repo: "contributions", error: errMsg(e) });
+    }
 
     // Phase 2 — star/fork history: only for repos whose count moved (keeps API usage low).
     // Smallest first, so a big first-time backfill can't starve everything else.
@@ -140,6 +156,20 @@ export async function runSync(opts: SyncOptions = {}): Promise<SyncResult> {
         errors.push({ repo: `${r.full_name} (code stats)`, error: errMsg(e) });
       }
     });
+
+    // Phase 4 — issues & PRs, Actions runs, Dependabot alerts, community health (incremental,
+    // ~3 requests per repo per day). Your own active repos only; least recently synced first.
+    const activityJobs = owned
+      .filter((r) => !r.fork && !r.archived)
+      .sort((a, b) => (activityFor.get(a.id)?.activitySyncedAt?.getTime() ?? 0) - (activityFor.get(b.id)?.activitySyncedAt?.getTime() ?? 0));
+    await mapLimit(activityJobs, 4, async (r) => {
+      if (outOfTime()) return void activityPending++;
+      try {
+        await syncRepoActivity(r, activityFor.get(r.id));
+      } catch (e) {
+        errors.push({ repo: `${r.full_name} (activity)`, error: errMsg(e) });
+      }
+    });
   } catch (e) {
     errors.push({ repo: "*", error: errMsg(e) });
   }
@@ -162,7 +192,7 @@ export async function runSync(opts: SyncOptions = {}): Promise<SyncResult> {
     })
     .where(eq(syncRuns.id, run.id));
 
-  return { reposSynced, historyPending, codeStatsPending, alertsCreated, starHistoryUnavailable, errors };
+  return { reposSynced, historyPending, codeStatsPending, activityPending, contributionYearsPending, alertsCreated, starHistoryUnavailable, errors };
 }
 
 /** repo id → pushed_at (ms) that languages/lines were last checked for, and the commit that was counted */

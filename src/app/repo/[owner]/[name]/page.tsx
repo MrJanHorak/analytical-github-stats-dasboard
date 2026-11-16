@@ -1,14 +1,17 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { CiPanel, HealthChecklist, IssueFlowPanel, SecurityCounts } from "@/components/Activity";
 import { TimeSeriesChart } from "@/components/charts";
+import { healthColor } from "@/components/format";
 import { RangePicker } from "@/components/RangePicker";
 import { SetupNotice } from "@/components/SetupNotice";
 import { LanguageBars } from "@/components/LanguageBars";
 import { StatCard } from "@/components/StatCard";
 import { isDbConfigured } from "@/lib/db";
 import { addNote, deleteNote } from "./actions";
-import { getCommitActivity, getLanguages } from "@/lib/github-cached";
+import { getCodeFrequency, getCommitActivity, getLanguages } from "@/lib/github-cached";
 import { getRepoDetail } from "@/lib/queries";
+import { monthlyCodeFrequency } from "@/lib/transform";
 import { fmt, isoDay, parseRange, rangeParam, rangeText } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
@@ -29,10 +32,12 @@ export default async function RepoPage({ params, searchParams }: Props) {
 
   // Live (not stored) extras, cached; failures shouldn't break the page.
   // Languages are stored by the sync; until it has run for this repo, fall back to a live fetch.
-  const [liveLanguages, commits] = await Promise.all([
+  const [liveLanguages, commits, codeFrequency] = await Promise.all([
     data.languages.length ? Promise.resolve(null) : getLanguages(owner, name),
     getCommitActivity(owner, name),
+    getCodeFrequency(owner, name),
   ]);
+  const codeMonths = monthlyCodeFrequency(codeFrequency);
   const languages = liveLanguages
     ? Object.entries(liveLanguages).map(([language, bytes]) => ({ language, bytes }))
     : data.languages;
@@ -129,6 +134,25 @@ export default async function RepoPage({ params, searchParams }: Props) {
             series={[{ key: "commits", label: "Commits", color: "#db61a2" }]} />
         </section>
       </div>
+
+      <section className="min-w-0 rounded-xl border border-zinc-800 p-4">
+        <h2 className="text-sm font-medium text-zinc-400">Code growth</h2>
+        <p className="mb-3 text-xs text-zinc-500">
+          Lines added and deleted per month over the repo&apos;s whole history (all files, lock files included) — GitHub
+          doesn&apos;t compute this for repos with 10,000+ commits
+        </p>
+        <TimeSeriesChart
+          data={codeMonths}
+          monthly
+          emptyText="GitHub is still computing code stats (or this repo has 10,000+ commits) — try again shortly."
+          series={[
+            { key: "additions", label: "Added", color: "#3fb950" },
+            { key: "deletions", label: "Deleted", color: "#f85149" },
+          ]}
+        />
+      </section>
+
+      {data.activity.synced && <ActivitySections activity={data.activity} range={rangeParam(range)} rangeLabel={rt} fullName={data.repo.fullName} />}
 
       <section className="min-w-0 rounded-xl border border-zinc-800 p-4">
         <h2 className="mb-3 text-sm font-medium text-zinc-400">Notes &amp; alerts</h2>
@@ -334,5 +358,66 @@ function Table({ title, headers, rows }: { title: string; headers: string[]; row
         <p className="text-sm text-zinc-500">Nothing yet.</p>
       )}
     </section>
+  );
+}
+
+type RepoActivity = NonNullable<Awaited<ReturnType<typeof getRepoDetail>>>["activity"];
+
+function ActivitySections({ activity, range, rangeLabel, fullName }: { activity: RepoActivity; range: string; rangeLabel: string; fullName: string }) {
+  const h = activity.health;
+  const security =
+    h && h.dependabotHigh !== null
+      ? { critical: h.dependabotCritical ?? 0, high: h.dependabotHigh ?? 0, medium: h.dependabotMedium ?? 0, low: h.dependabotLow ?? 0 }
+      : null;
+  return (
+    <>
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <IssueFlowPanel flow={activity.flow} weekly={activity.weekly} rangeLabel={rangeLabel} />
+        <CiPanel ci={activity.ci} range={range} />
+      </div>
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <section className="min-w-0 rounded-xl border border-zinc-800 p-4">
+          <div className="mb-3 flex items-baseline justify-between gap-2">
+            <h2 className="text-sm font-medium text-zinc-400">Community health</h2>
+            {h?.healthPercentage !== null && h?.healthPercentage !== undefined && (
+              <span className={`text-lg font-semibold tabular-nums ${healthColor(h.healthPercentage)}`}>{h.healthPercentage}%</span>
+            )}
+          </div>
+          {h && h.healthPercentage !== null ? (
+            <HealthChecklist health={h} />
+          ) : (
+            <p className="text-sm text-zinc-500">GitHub only reports community health for public repositories.</p>
+          )}
+          <h3 className="mb-2 mt-4 text-xs font-medium text-zinc-500">Open Dependabot alerts</h3>
+          {security ? (
+            <SecurityCounts counts={security} />
+          ) : (
+            <p className="text-sm text-zinc-500">
+              Unavailable — Dependabot alerts are off for this repo, or the token lacks <b>Dependabot alerts: Read-only</b>.
+            </p>
+          )}
+        </section>
+        <section className="min-w-0 rounded-xl border border-zinc-800 p-4">
+          <h2 className="mb-3 text-sm font-medium text-zinc-400">Open issues &amp; pull requests</h2>
+          {activity.open.length ? (
+            <ul className="space-y-1.5 text-sm">
+              {activity.open.map((i) => (
+                <li key={i.number} className="flex items-center gap-2">
+                  <span className={`w-6 shrink-0 text-xs ${i.isPr ? "text-violet-400" : "text-emerald-400"}`}>{i.isPr ? "PR" : "●"}</span>
+                  <a href={`https://github.com/${fullName}/${i.isPr ? "pull" : "issues"}/${i.number}`} target="_blank" className="min-w-0 flex-1 truncate hover:text-accent">
+                    {i.title}
+                  </a>
+                  {i.outside && <span className="rounded bg-zinc-800 px-1.5 text-[10px] text-zinc-400">outside</span>}
+                  {i.isBot && <span className="rounded bg-zinc-800 px-1.5 text-[10px] text-zinc-500">bot</span>}
+                  <span className="w-20 shrink-0 text-right text-xs tabular-nums text-zinc-500">{i.createdAt.toISOString().slice(0, 10)}</span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-sm text-zinc-500">Nothing open. 🎉</p>
+          )}
+        </section>
+      </div>
+    </>
   );
 }
