@@ -6,7 +6,7 @@ import { eq, inArray, sql } from "drizzle-orm";
 import { getDb, schema } from "../src/lib/db";
 import { daysAgo, isoDay } from "../src/lib/utils";
 
-const { alerts, annotations, contributionDays, contributionRepos, contributionYears, profileSnapshots, issues, workflowRuns, repoHealth, repoFrameworks, repos, repoLanguages, repoLoc, repoSnapshots, trafficDaily, trafficWindows, referrers, popularPaths, releaseAssets, starEvents, forkEvents, syncRuns } =
+const { alerts, annotations, contributionDays, contributionRepos, contributionYears, profileSnapshots, issues, workflowRuns, repoHealth, repoFrameworks, codeSnapshots, deployments, packageVersions, repos, repoLanguages, repoLoc, repoSnapshots, trafficDaily, trafficWindows, referrers, popularPaths, releaseAssets, starEvents, forkEvents, syncRuns } =
   schema;
 
 // Deterministic PRNG so screenshots are stable
@@ -37,7 +37,7 @@ const DAYS = 120;
 async function main() {
   const db = getDb();
   const ids = DEMO.map((_, i) => 900001 + i);
-  for (const t of [alerts, annotations, issues, workflowRuns, repoHealth, repoFrameworks, repoLanguages, repoLoc, trafficDaily, trafficWindows, repoSnapshots, referrers, popularPaths, releaseAssets, starEvents, forkEvents]) {
+  for (const t of [alerts, annotations, issues, workflowRuns, repoHealth, repoFrameworks, codeSnapshots, deployments, repoLanguages, repoLoc, trafficDaily, trafficWindows, repoSnapshots, referrers, popularPaths, releaseAssets, starEvents, forkEvents]) {
     await db.delete(t).where(inArray(t.repoId, ids));
   }
   await db.delete(repos).where(inArray(repos.id, ids));
@@ -202,9 +202,70 @@ async function main() {
     "fire-pit-tool": [["Next.js", "Full-stack", "15.0.3"], ["React", "Frontend", "19.0.0"], ["Express", "Backend", "4.21.1"], ["Prisma", "Data & ORM", "5.22.0"], ["PostgreSQL", "Data & ORM", null], ["Tailwind CSS", "Styling & UI", "3.4.15"], ["TypeScript", "Build & tooling", "5.6.3"], ["Docker", "Deployment", null], ["Railway", "Deployment", null]],
     dotfiles: [],
   };
+  // Packages the frameworks came from, and their latest releases, so some show as a major behind
+  const PKG: Record<string, [string, string]> = {
+    React: ["npm", "react"], "Next.js": ["npm", "next"], Vite: ["npm", "vite"], "Tailwind CSS": ["npm", "tailwindcss"],
+    Vitest: ["npm", "vitest"], TypeScript: ["npm", "typescript"], Jest: ["npm", "jest"], Playwright: ["npm", "@playwright/test"],
+    Express: ["npm", "express"], Prisma: ["npm", "prisma"], "Three.js": ["npm", "three"], Mapbox: ["npm", "mapbox-gl"], Recharts: ["npm", "recharts"],
+  };
+  const LATEST: Record<string, string> = {
+    react: "19.2.0", next: "15.5.4", vite: "7.1.0", tailwindcss: "4.1.13", vitest: "3.2.4", typescript: "5.9.2", jest: "30.1.3",
+    "@playwright/test": "1.55.0", express: "5.1.0", prisma: "6.16.0", three: "0.180.0", "mapbox-gl": "3.15.0", recharts: "3.2.0",
+  };
+  await db.delete(packageVersions);
+  await db.insert(packageVersions).values(Object.entries(LATEST).map(([pkg, latest]) => ({ ecosystem: "npm", package: pkg, latest, checkedAt: new Date() })));
   for (const [i, d] of DEMO.entries()) {
-    const rows = FW[d.name].map(([framework, category, version]) => ({ repoId: ids[i], framework, category, version }));
+    const rows = FW[d.name].map(([framework, category, version]) => ({
+      repoId: ids[i],
+      framework,
+      category,
+      version,
+      package: version && PKG[framework] ? PKG[framework][1] : null,
+      ecosystem: version && PKG[framework] ? PKG[framework][0] : null,
+    }));
     if (rows.length) await db.insert(repoFrameworks).values(rows);
+  }
+
+  // Code history (one snapshot every few days, growing) plus test lines and TODOs
+  const TEST_SHARE = [0.22, 0.12, 0.31, 0.05, 0.09, 0];
+  for (const i of DEMO.keys()) {
+    const c = CODE[i];
+    const snaps: (typeof codeSnapshots.$inferInsert)[] = [];
+    for (let back = DAYS - 1; back >= 0; back -= int(2, 6)) {
+      const progress = 1 - back / DAYS;
+      const lines = Math.round(c.lines * (0.72 + 0.28 * progress));
+      snaps.push({ repoId: ids[i], date: daysAgo(back), linesOfCode: lines, testLines: Math.round(lines * TEST_SHARE[i] * (0.8 + 0.2 * progress)), todoCount: int(2, 30) });
+    }
+    snaps.push({ repoId: ids[i], date: daysAgo(0), linesOfCode: c.lines, testLines: Math.round(c.lines * TEST_SHARE[i]), todoCount: [14, 23, 6, 9, 31, 0][i] });
+    await db.insert(codeSnapshots).values(snaps).onConflictDoNothing();
+    const last = snaps.at(-1)!;
+    await db.update(repos).set({ testLines: last.testLines, todoCount: last.todoCount }).where(eq(repos.id, ids[i]));
+  }
+
+  // Deployments for the repos that deploy to Vercel / Netlify / Railway
+  const DEPLOYS: Record<string, [string, number]> = { "balsa-glider-designer": ["Vercel", 9], terratime: ["Netlify", 4], "pomodoro-timer": ["Netlify", 1], "fire-pit-tool": ["Railway", 3] };
+  for (const [i, d] of DEMO.entries()) {
+    const cfg = DEPLOYS[d.name];
+    if (!cfg) continue;
+    const rows: (typeof deployments.$inferInsert)[] = [];
+    let id = ids[i] * 10_000;
+    for (let back = 89; back >= 0; back--) {
+      if (rand() > cfg[1] / 10) continue;
+      const createdAt = new Date(daysAgo(back) + `T${String(int(9, 22)).padStart(2, "0")}:00:00Z`);
+      const preview = rand() < 0.45;
+      const roll = rand();
+      rows.push({
+        repoId: ids[i],
+        deploymentId: id++,
+        environment: preview ? "Preview" : "Production",
+        production: !preview,
+        ref: preview ? "feature-branch" : "main",
+        creator: `${cfg[0].toLowerCase()}[bot]`,
+        createdAt,
+        state: roll < 0.9 ? "success" : roll < 0.96 ? "failure" : "inactive",
+      });
+    }
+    if (rows.length) await db.insert(deployments).values(rows);
   }
 
   // Issues & PRs, Actions runs, community health and Dependabot alerts per repo
@@ -299,6 +360,7 @@ async function main() {
       dependabotMedium: dep?.[2] ?? null,
       dependabotLow: dep?.[3] ?? null,
       actionsAvailable: true,
+      deploymentsAvailable: true,
       issuesSyncedAt: new Date(),
       runsSyncedAt: new Date(),
       activitySyncedAt: new Date(),

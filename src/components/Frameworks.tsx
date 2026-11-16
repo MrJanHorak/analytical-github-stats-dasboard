@@ -41,14 +41,23 @@ export function FrameworksPanel({ groups, range, reposCounted }: { groups: Group
 }
 
 /** One repo's frameworks as compact tags. */
-export function FrameworkTags({ frameworks }: { frameworks: { name: string; version: string | null }[] }) {
+export function FrameworkTags({
+  frameworks,
+}: {
+  frameworks: { name: string; version: string | null; latest?: string | null; outdated?: boolean }[];
+}) {
   if (!frameworks.length) return null;
   return (
     <ul className="mb-3 mt-2 flex flex-wrap gap-1.5">
       {frameworks.map((f) => (
-        <li key={f.name} className="rounded-md border border-zinc-800 bg-zinc-900 px-2 py-0.5 text-xs text-zinc-300">
+        <li
+          key={f.name}
+          className={`rounded-md border bg-zinc-900 px-2 py-0.5 text-xs text-zinc-300 ${f.outdated ? "border-amber-900" : "border-zinc-800"}`}
+          title={f.outdated ? `A major version behind — latest is ${f.latest}` : f.latest ? `Latest: ${f.latest}` : undefined}
+        >
           {f.name}
           {f.version && <span className="ml-1 text-zinc-500">{f.version}</span>}
+          {f.outdated && <span className="ml-1 text-amber-400">→ {f.latest}</span>}
         </li>
       ))}
     </ul>

@@ -434,3 +434,49 @@ export async function fetchDependabotAlerts(owner: string, repo: string): Promis
     throw e;
   }
 }
+
+// --- Deployments (M3.9) --------------------------------------------------------------------------
+
+export type DeploymentItem = {
+  deploymentId: number;
+  environment: string;
+  ref: string | null;
+  creator: string | null;
+  createdAt: string;
+};
+
+/** Max deployments read per repo per sync (newest first). */
+const MAX_DEPLOYMENTS = 300;
+
+/**
+ * Deployments created after `since`, newest first (Vercel, Netlify, GitHub Pages and Actions
+ * environments all report here). Null when the token can't read them ("Deployments: Read-only").
+ */
+export async function fetchDeployments(owner: string, repo: string, since: Date): Promise<DeploymentItem[] | null> {
+  const octokit = getOctokit();
+  const out: DeploymentItem[] = [];
+  try {
+    for await (const res of octokit.paginate.iterator(octokit.rest.repos.listDeployments, { owner, repo, per_page: 100 })) {
+      for (const d of res.data) {
+        if (new Date(d.created_at) < since || out.length >= MAX_DEPLOYMENTS) return out;
+        out.push({
+          deploymentId: d.id,
+          environment: d.environment ?? "unknown",
+          ref: d.ref ?? null,
+          creator: d.creator?.login ?? null,
+          createdAt: d.created_at,
+        });
+      }
+    }
+  } catch (e) {
+    if (statusOf(e) === 403 || statusOf(e) === 404) return null;
+    throw e;
+  }
+  return out;
+}
+
+/** A deployment's latest status (success, failure, error, inactive, in_progress, …), null if none yet. */
+export async function fetchDeploymentState(owner: string, repo: string, deploymentId: number): Promise<string | null> {
+  const { data } = await getOctokit().rest.repos.listDeploymentStatuses({ owner, repo, deployment_id: deploymentId, per_page: 1 });
+  return data[0]?.state ?? null;
+}

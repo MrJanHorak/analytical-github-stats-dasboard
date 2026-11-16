@@ -18,7 +18,7 @@ export const CATEGORIES = [
 ] as const;
 export type Category = (typeof CATEGORIES)[number];
 
-type Eco = "npm" | "pypi" | "gem" | "composer" | "go" | "cargo" | "maven";
+export type Eco = "npm" | "pypi" | "gem" | "composer" | "go" | "cargo" | "maven";
 
 type Rule = {
   name: string;
@@ -230,7 +230,14 @@ export function parseManifest(kind: Eco, text: string): Map<string, string | nul
   return out;
 }
 
-export type DetectedFramework = { name: string; category: Category; version: string | null };
+export type DetectedFramework = {
+  name: string;
+  category: Category;
+  version: string | null;
+  /** The dependency that matched (for checking the latest release), null for config-file detections */
+  package?: string | null;
+  ecosystem?: Eco | null;
+};
 
 const depMatches = (pattern: string, dep: string) => (pattern.endsWith("/") ? dep.startsWith(pattern) : dep === pattern || (pattern === "spring-boot" && dep.startsWith("spring-boot")));
 
@@ -240,18 +247,21 @@ const depMatches = (pattern: string, dep: string) => (pattern.endsWith("/") ? de
  */
 export function detectFrameworks(manifests: { kind: Eco; deps: Map<string, string | null> }[], configPaths: string[]): DetectedFramework[] {
   const found = new Map<string, DetectedFramework>();
-  const note = (rule: Rule, version: string | null) => {
+  const note = (rule: Rule, version: string | null, pkg: string | null = null, eco: Eco | null = null) => {
     const cur = found.get(rule.name);
-    if (!cur) found.set(rule.name, { name: rule.name, category: rule.category, version });
-    else if (version && (!cur.version || compareVersions(version, cur.version) > 0)) cur.version = version;
+    if (!cur) found.set(rule.name, { name: rule.name, category: rule.category, version, package: pkg, ecosystem: eco });
+    else if (version && (!cur.version || compareVersions(version, cur.version) > 0)) Object.assign(cur, { version, package: pkg, ecosystem: eco });
+    else if (!cur.package && pkg) Object.assign(cur, { package: pkg, ecosystem: eco });
   };
   for (const rule of RULES) {
     for (const [eco, patterns] of Object.entries(rule.deps ?? {}) as [Eco, string[]][]) {
       for (const m of manifests) {
         if (m.kind !== eco) continue;
         for (const [dep, spec] of m.deps) {
-          if (patterns.some((p) => depMatches(p, dep)))
-            note(rule, rule.noVersion || patterns.some((p) => p.endsWith("/")) ? null : cleanVersion(spec));
+          if (patterns.some((p) => depMatches(p, dep))) {
+            const versioned = !rule.noVersion && !patterns.some((p) => p.endsWith("/"));
+            note(rule, versioned ? cleanVersion(spec) : null, versioned ? dep : null, versioned ? eco : null);
+          }
         }
       }
     }

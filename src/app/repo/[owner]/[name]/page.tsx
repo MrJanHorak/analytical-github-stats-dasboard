@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { CiPanel, HealthChecklist, IssueFlowPanel, SecurityCounts } from "@/components/Activity";
 import { TimeSeriesChart } from "@/components/charts";
 import { FrameworkTags } from "@/components/Frameworks";
+import { DeploysPanel } from "@/components/CodeHealth";
 import { healthColor } from "@/components/format";
 import { RangePicker } from "@/components/RangePicker";
 import { SetupNotice } from "@/components/SetupNotice";
@@ -136,22 +137,38 @@ export default async function RepoPage({ params, searchParams }: Props) {
         </section>
       </div>
 
-      <section className="min-w-0 rounded-xl border border-zinc-800 p-4">
-        <h2 className="text-sm font-medium text-zinc-400">Code growth</h2>
-        <p className="mb-3 text-xs text-zinc-500">
-          Lines added and deleted per month over the repo&apos;s whole history (all files, lock files included) — GitHub
-          doesn&apos;t compute this for repos with 10,000+ commits
-        </p>
-        <TimeSeriesChart
-          data={codeMonths}
-          monthly
-          emptyText="GitHub is still computing code stats (or this repo has 10,000+ commits) — try again shortly."
-          series={[
-            { key: "additions", label: "Added", color: "#3fb950" },
-            { key: "deletions", label: "Deleted", color: "#f85149" },
-          ]}
-        />
-      </section>
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <section className="min-w-0 rounded-xl border border-zinc-800 p-4">
+          <h2 className="text-sm font-medium text-zinc-400">Code growth</h2>
+          <p className="mb-3 text-xs text-zinc-500">
+            Lines added and deleted per month over the repo&apos;s whole history (all files, lock files included) — GitHub
+            doesn&apos;t compute this for repos with 10,000+ commits
+          </p>
+          <TimeSeriesChart
+            data={codeMonths}
+            monthly
+            emptyText="GitHub is still computing code stats (or this repo has 10,000+ commits) — try again shortly."
+            series={[
+              { key: "additions", label: "Added", color: "#3fb950" },
+              { key: "deletions", label: "Deleted", color: "#f85149" },
+            ]}
+          />
+          {data.codeHistory.length > 1 && (
+            <>
+              <h3 className="mb-1.5 mt-4 text-xs font-medium text-zinc-500">Lines of code counted by the sync</h3>
+              <TimeSeriesChart
+                data={data.codeHistory}
+                height={120}
+                series={[
+                  { key: "lines", label: "Lines", color: "#2f81f7" },
+                  { key: "tests", label: "Test lines", color: "#3fb950", dashed: true },
+                ]}
+              />
+            </>
+          )}
+        </section>
+        <DeploysPanel deploys={data.deploys} permissionMissing={data.deployPermissionMissing} showRepos={false} />
+      </div>
 
       {data.activity.synced && <ActivitySections activity={data.activity} range={rangeParam(range)} rangeLabel={rt} fullName={data.repo.fullName} />}
 
@@ -237,7 +254,7 @@ export default async function RepoPage({ params, searchParams }: Props) {
             title="Non-blank lines on the default branch. Lock files, vendored and build directories, generated and minified files, and non-code files (Markdown, JSON, YAML) are left out; .gitattributes linguist-* rules are honoured."
           >
             {repo.linesOfCode !== null
-              ? `${fmt(repo.linesOfCode)} lines of code${repo.locCommitSha && repo.locCommitSha !== "demo" ? ` · at ${repo.locCommitSha.slice(0, 7)}` : ""}`
+              ? `${fmt(repo.linesOfCode)} lines of code${repo.testLines !== null && repo.linesOfCode ? ` · ${Math.round((repo.testLines / repo.linesOfCode) * 100)}% tests` : ""}${repo.todoCount ? ` · ${fmt(repo.todoCount)} TODO/FIXME` : ""}${repo.locCommitSha && repo.locCommitSha !== "demo" ? ` · at ${repo.locCommitSha.slice(0, 7)}` : ""}`
               : repo.codeStatsPushedAt
                 ? "Line count skipped (repository larger than 500 MB)"
                 : "Line count appears after the next sync"}

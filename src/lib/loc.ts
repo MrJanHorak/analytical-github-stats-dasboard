@@ -122,6 +122,23 @@ export function defaultSkipReason(path: string): "lockfile" | "vendored" | "mini
   return null;
 }
 
+/** Test code: test/spec files and files inside test directories (any language). */
+export function isTestPath(path: string): boolean {
+  return (
+    /(^|\/)(__tests__|__test__|tests?|spec|specs|e2e|cypress|playwright)\//i.test(path) ||
+    /\.(test|spec|e2e|cy)\.[a-z0-9]+$/i.test(path) ||
+    /(^|\/)test_[^/]+\.py$/.test(path) ||
+    /_test\.(go|py|rb|exs?)$/.test(path) ||
+    /_spec\.rb$/.test(path) ||
+    /Tests?\.(java|kt|cs|swift)$/.test(path)
+  );
+}
+
+/** TODO / FIXME / HACK markers in a file. */
+export function countTodos(text: string): number {
+  return text.match(/\b(TODO|FIXME|HACK)\b/g)?.length ?? 0;
+}
+
 /** Total lines and non-blank lines, or null for binary / minified content. */
 export function countLines(buf: Buffer): { lines: number; nonBlank: number } | null {
   const sniff = Math.min(buf.length, 8000);
@@ -219,7 +236,7 @@ export function attributesFor(path: string, rules: AttrRule[]): Record<string, A
 // ---------------------------------------------------------------------------------------------
 // Summaries
 
-export type CountedFile = { path: string; language: string; lines: number; nonBlank: number };
+export type CountedFile = { path: string; language: string; lines: number; nonBlank: number; todos?: number };
 export type LanguageLoc = { language: string; files: number; lines: number; nonBlank: number };
 export type LocSummary = {
   /** Non-blank lines across counted files — the headline "lines of code" number. */
@@ -227,6 +244,10 @@ export type LocSummary = {
   lines: number;
   files: number;
   languages: LanguageLoc[];
+  /** Non-blank lines in test files (see isTestPath), included in nonBlank */
+  testNonBlank: number;
+  /** TODO / FIXME / HACK markers in counted files */
+  todos: number;
   /** Frameworks and tools from dependency manifests and config files (see src/lib/frameworks.ts) */
   frameworks: DetectedFramework[];
 };
@@ -234,6 +255,8 @@ export type LocSummary = {
 /** Apply default skip rules and .gitattributes, then total per language (largest first). */
 export function summarize(files: CountedFile[], rules: AttrRule[]): LocSummary {
   const by = new Map<string, LanguageLoc>();
+  let testNonBlank = 0;
+  let todos = 0;
   for (const f of files) {
     const attrs = rules.length ? attributesFor(f.path, rules) : {};
     if (attrs["linguist-generated"] === true || attrs["linguist-documentation"] === true) continue;
@@ -247,10 +270,14 @@ export function summarize(files: CountedFile[], rules: AttrRule[]): LocSummary {
     cur.lines += f.lines;
     cur.nonBlank += f.nonBlank;
     by.set(language, cur);
+    if (isTestPath(f.path)) testNonBlank += f.nonBlank;
+    todos += f.todos ?? 0;
   }
   const languages = [...by.values()].sort((a, b) => b.nonBlank - a.nonBlank || a.language.localeCompare(b.language));
   return {
     frameworks: [],
+    testNonBlank,
+    todos,
     nonBlank: languages.reduce((a, l) => a + l.nonBlank, 0),
     lines: languages.reduce((a, l) => a + l.lines, 0),
     files: languages.reduce((a, l) => a + l.files, 0),
@@ -295,7 +322,7 @@ export async function countTarball(gzipped: Readable): Promise<LocSummary> {
       if (isAttrs) rules.push(...parseGitattributes(buf.toString("utf8"), dirname(path)));
       else if (language) {
         const counted = countLines(buf);
-        if (counted) files.push({ path, language, ...counted });
+        if (counted) files.push({ path, language, ...counted, todos: countTodos(buf.toString("utf8")) });
       }
       done();
     });

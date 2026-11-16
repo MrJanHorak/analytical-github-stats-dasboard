@@ -15,6 +15,8 @@ A self-hosted Next.js dashboard for **views, unique visitors, clones, referrers,
 | **Code** | Languages across all your repos (share of bytes, repos per language) and real lines of code per repo, per language and in total — counted from each repo's default branch with lock files, vendored, generated and non-code files left out, and recounted only when the default branch gets a new commit. Forks are left out of the totals |
 | **Frameworks & tools** | What each repo is built with — React, Next.js, Django, Tailwind, Prisma, Vitest, Docker, … about 100 frameworks and tools in 10 categories — read from dependency manifests and config files while lines are counted (no extra API calls). Overview shows how many repos use each and the newest version; click one to filter the repo table. Repo pages show them as tags |
 | **Your activity** | `/me`: your contributions in any repo, as GitHub counts them — all-time commits, pull requests, issues and reviews, a contribution heatmap with current and longest streak, totals per year, the repos you contribute to most (yours and others'), and follower growth |
+| **Code health** | Share of code that is tests (files in test folders or named `*.test` / `*.spec` / `test_*`), repos with tests, TODO/FIXME count, lines of code over time (from a snapshot each time a repo is recounted — history starts when you install this), and frameworks declared a major version behind their latest npm / PyPI release, with the repos affected. Repo pages flag outdated framework tags |
+| **Deployments** | Production and preview deploys per week and their success rate, per repo — from the deployments Vercel, Netlify, GitHub Pages and Actions environments report to GitHub |
 | **Project activity** | Issues and pull requests opened/closed/merged, median time to close and to merge, what's open now and who your outside contributors are (bots and your team left out); GitHub Actions pass rate, run count and duration per workflow plus recent failures; GitHub's community-health score and checklist (README, license, contributing guide, …) and open Dependabot alerts by severity. In the repo table: health and CI columns and an alerts badge |
 | **History** | Traffic is stored daily, so it outlives GitHub's 14-day limit. Star and fork history is rebuilt from GitHub's timestamps, back to the day each repo was created |
 | **Alerts** | Traffic spikes, star bursts and star milestones, shown in the app and optionally posted to Slack or Discord |
@@ -34,6 +36,15 @@ A self-hosted Next.js dashboard for **views, unique visitors, clones, referrers,
 ### Frameworks & tools
 
 ![Frameworks and tools](docs/frameworks.png)
+
+### Code health & deployments
+
+<table>
+<tr>
+<td width="50%"><b>Code health</b> — tests, TODOs, lines over time, outdated frameworks<br><img src="docs/code-health.png" alt="Code health"></td>
+<td width="50%"><b>Deployments</b> — production vs preview, success rate, per repo<br><img src="docs/deployments.png" alt="Deployments"></td>
+</tr>
+</table>
 
 ### Your activity
 
@@ -79,7 +90,7 @@ See [PLAN.md](./PLAN.md) for the architecture, data model and roadmap.
 
 ## Setup
 
-1. **Token**: create a [fine-grained PAT](https://github.com/settings/personal-access-tokens/new) with *All repositories*, **Administration: Read-only**, **Contents: Read-only** (release download counts, line counting), **Issues: Read-only** and **Pull requests: Read-only** (issue/PR stats for private repos — public ones work without) and **Metadata: Read-only** (or a classic token with `repo`). Optional: **Actions: Read-only** for CI stats and **Dependabot alerts: Read-only** for security alerts. Whatever is missing, the sync skips quietly and the panel says which permission to add; everything else works. You can add permissions to an existing fine-grained token without changing its value.
+1. **Token**: create a [fine-grained PAT](https://github.com/settings/personal-access-tokens/new) with *All repositories*, **Administration: Read-only**, **Contents: Read-only** (release download counts, line counting), **Issues: Read-only** and **Pull requests: Read-only** (issue/PR stats for private repos — public ones work without) and **Metadata: Read-only** (or a classic token with `repo`). Optional: **Actions: Read-only** for CI stats, **Deployments: Read-only** for deploy frequency and **Dependabot alerts: Read-only** for security alerts. Whatever is missing, the sync skips quietly and the panel says which permission to add; everything else works. You can add permissions to an existing fine-grained token without changing its value.
    GitHub is restricting the stargazers list to repo admins and collaborators; when it refuses a repo (403), the sync skips that repo's star *history* and says so. Star counts still update.
 2. **Database**: create a Postgres database. [Neon](https://neon.tech)'s free tier works well; Railway, Supabase or a local Docker container work too.
 3. **Configure and run**
@@ -146,7 +157,7 @@ GitHub has no "lines of code" number, so the sync counts them itself: it streams
 
 A repo is only re-downloaded when its default branch has a new commit, so pushes to other branches cost one API call. Repos larger than 500 MB are skipped. Counting needs the token's **Contents: Read-only** permission. The language bars still show GitHub's Linguist byte counts next to the line counts.
 
-While streaming the tarball the sync also reads dependency manifests — every `package.json` (so monorepos work), `requirements*.txt`, `pyproject.toml`, `Pipfile`, `setup.py`, `Gemfile`, `composer.json`, `go.mod`, `Cargo.toml`, `pom.xml`, `build.gradle` — and notes tell-tale config files (`next.config.*`, `vite.config.*`, `tailwind.config.*`, `Dockerfile`, `.github/workflows/*`, `vercel.json`, `fly.toml`, …). The rules live in `src/lib/frameworks.ts`; add a line there to detect something new. Detection is based on *declared* dependencies, like GitHub's dependency graph: a package that is listed but never imported still counts. Manifests in vendored or build folders are ignored, and when manifests disagree the highest version is shown.
+While streaming the tarball the sync also reads dependency manifests — every `package.json` (so monorepos work), `requirements*.txt`, `pyproject.toml`, `Pipfile`, `setup.py`, `Gemfile`, `composer.json`, `go.mod`, `Cargo.toml`, `pom.xml`, `build.gradle` — and notes tell-tale config files (`next.config.*`, `vite.config.*`, `tailwind.config.*`, `Dockerfile`, `.github/workflows/*`, `vercel.json`, `fly.toml`, …). The same pass counts test lines and TODO/FIXME/HACK markers and saves a dated snapshot, so lines of code build up a history from then on. Once a day the sync also asks npm and PyPI for the latest release of each package a framework was detected from (a few dozen public lookups, no token) and flags repos a major version behind (a minor version for 0.x packages). The rules live in `src/lib/frameworks.ts`; add a line there to detect something new. Detection is based on *declared* dependencies, like GitHub's dependency graph: a package that is listed but never imported still counts. Manifests in vendored or build folders are ignored, and when manifests disagree the highest version is shown.
 
 GitHub doesn't say who viewed or cloned a repo, so there is no way to separate people from bots. The 🤖 hint is a heuristic: a repo with at least 10 clones and more than twice as many clones as views in the selected range is flagged, because CI runs, mirrors and deploy hosts (Vercel and Netlify clone on every build) clone without ever opening the page.
 

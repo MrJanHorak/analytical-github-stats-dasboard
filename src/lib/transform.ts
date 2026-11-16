@@ -446,3 +446,121 @@ function versionCompare(a: string, b: string) {
   }
   return 0;
 }
+
+// --- Code health (M3.9) --------------------------------------------------------------------------
+
+const majorMinor = (v: string) => {
+  const [maj, min] = v.split(".").map((n) => parseInt(n, 10));
+  return { maj: Number.isFinite(maj) ? maj : 0, min: Number.isFinite(min) ? min : 0 };
+};
+
+/**
+ * True when `declared` is a major version behind `latest` (for 0.x packages, where minors are
+ * breaking, a minor behind). Pre-release "latest" tags never count.
+ */
+export function isOutdated(declared: string | null, latest: string | null): boolean {
+  if (!declared || !latest || /[-+]/.test(latest)) return false;
+  const d = majorMinor(declared);
+  const l = majorMinor(latest);
+  if (l.maj !== d.maj) return l.maj > d.maj;
+  return l.maj === 0 && l.min > d.min;
+}
+
+/** Frameworks declared at an older major version than the latest release, with the repos affected. */
+export function outdatedFrameworks(
+  rows: { repo: string; framework: string; version: string | null; package: string | null; ecosystem: string | null }[],
+  latest: Map<string, string | null>,
+) {
+  const by = new Map<string, { framework: string; latest: string; repos: { repo: string; version: string }[] }>();
+  for (const r of rows) {
+    if (!r.package || !r.ecosystem || !r.version) continue;
+    const l = latest.get(`${r.ecosystem}:${r.package}`) ?? null;
+    if (!l || !isOutdated(r.version, l)) continue;
+    const cur = by.get(r.framework) ?? { framework: r.framework, latest: l, repos: [] };
+    cur.repos.push({ repo: r.repo, version: r.version });
+    by.set(r.framework, cur);
+  }
+  return [...by.values()]
+    .map((f) => ({ ...f, repos: f.repos.sort((a, b) => a.repo.localeCompare(b.repo)) }))
+    .sort((a, b) => b.repos.length - a.repos.length || a.framework.localeCompare(b.framework));
+}
+
+const DEPLOY_OK = new Set(["success"]);
+const DEPLOY_FAIL = new Set(["failure", "error"]);
+
+/** Deployments since `since`: production vs preview, success rate, per repo and per week. */
+export function deployStats(
+  rows: { repo: string; production: boolean; state: string | null; createdAt: Date }[],
+  since: string,
+  until: string,
+) {
+  const sinceTs = new Date(since + "T00:00:00Z");
+  const recent = rows.filter((r) => r.createdAt >= sinceTs);
+  const prod = recent.filter((r) => r.production);
+  const ok = recent.filter((r) => r.state && DEPLOY_OK.has(r.state)).length;
+  const failed = recent.filter((r) => r.state && DEPLOY_FAIL.has(r.state)).length;
+  const days = Math.max(1, (new Date(until + "T00:00:00Z").getTime() - sinceTs.getTime()) / 86_400_000 + 1);
+  const byRepo = new Map<string, { repo: string; production: number; preview: number; last: Date }>();
+  for (const r of recent) {
+    const cur = byRepo.get(r.repo) ?? { repo: r.repo, production: 0, preview: 0, last: r.createdAt };
+    if (r.production) cur.production++;
+    else cur.preview++;
+    if (r.createdAt > cur.last) cur.last = r.createdAt;
+    byRepo.set(r.repo, cur);
+  }
+  // Weekly production / preview counts, Monday weeks
+  const weekOf = (d: Date) => {
+    const t = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+    t.setUTCDate(t.getUTCDate() - ((t.getUTCDay() + 6) % 7));
+    return t.toISOString().slice(0, 10);
+  };
+  const weeks = new Map<string, { date: string; production: number; preview: number }>();
+  for (let t = new Date(weekOf(sinceTs) + "T00:00:00Z"); t.toISOString().slice(0, 10) <= until; t.setUTCDate(t.getUTCDate() + 7))
+    weeks.set(t.toISOString().slice(0, 10), { date: t.toISOString().slice(0, 10), production: 0, preview: 0 });
+  for (const r of recent) {
+    const w = weeks.get(weekOf(r.createdAt));
+    if (w) w[r.production ? "production" : "preview"]++;
+  }
+  return {
+    total: recent.length,
+    production: prod.length,
+    preview: recent.length - prod.length,
+    productionPerWeek: Math.round((prod.length / days) * 7 * 10) / 10,
+    successRate: ok + failed ? ok / (ok + failed) : null,
+    failed,
+    byRepo: [...byRepo.values()].sort((a, b) => b.production + b.preview - (a.production + a.preview) || a.repo.localeCompare(b.repo)),
+    weekly: [...weeks.values()],
+  };
+}
+
+/**
+ * Lines of code (and test lines) over time, summed across repos: each repo contributes its most
+ * recent snapshot on or before each day. Days before any snapshot are left out.
+ */
+export function codeHistory(snapshots: { repoId: number; date: string; linesOfCode: number; testLines: number }[], since: string, until: string) {
+  const byRepo = new Map<number, { date: string; linesOfCode: number; testLines: number }[]>();
+  for (const s of [...snapshots].sort((a, b) => a.date.localeCompare(b.date))) {
+    if (!byRepo.has(s.repoId)) byRepo.set(s.repoId, []);
+    byRepo.get(s.repoId)!.push(s);
+  }
+  const first = snapshots.reduce<string | null>((m, s) => (!m || s.date < m ? s.date : m), null);
+  if (!first) return [];
+  const out: { date: string; lines: number; tests: number }[] = [];
+  const idx = new Map<number, number>();
+  for (let t = new Date((first > since ? first : since) + "T00:00:00Z"); t.toISOString().slice(0, 10) <= until; t.setUTCDate(t.getUTCDate() + 1)) {
+    const day = t.toISOString().slice(0, 10);
+    let lines = 0;
+    let tests = 0;
+    for (const [repoId, list] of byRepo) {
+      let i = idx.get(repoId) ?? -1;
+      while (i + 1 < list.length && list[i + 1].date <= day) i++;
+      idx.set(repoId, i);
+      if (i >= 0) {
+        lines += list[i].linesOfCode;
+        tests += list[i].testLines;
+      }
+    }
+    out.push({ date: day, lines, tests });
+  }
+  return out;
+}

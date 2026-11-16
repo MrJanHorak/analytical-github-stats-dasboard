@@ -81,9 +81,23 @@ describe("detectFrameworks", () => {
     expect(detectFrameworks([], ["next.config.mjs", "tailwind.config.ts"]).map((f) => f.name)).toEqual(["Next.js", "Tailwind CSS"]);
     expect(detectFrameworks([npm({ "react-dom": "18", "next-auth": "4" })], []).map((f) => f.name)).toEqual([]);
     // A database found through its client library gets no (misleading) version
-    expect(detectFrameworks([npm({ postgres: "^3.4.0" })], [])).toEqual([{ name: "PostgreSQL", category: "Data & ORM", version: null }]);
+    expect(detectFrameworks([npm({ postgres: "^3.4.0" })], [])).toEqual([
+      { name: "PostgreSQL", category: "Data & ORM", version: null, package: null, ecosystem: null },
+    ]);
     expect(isConfigSignal(".github/workflows/deploy.yaml")).toBe(true);
     expect(isConfigSignal("docs/workflows/deploy.yaml")).toBe(false);
     expect(isConfigSignal("src/next.config.ts")).toBe(true); // nested apps in monorepos
+  });
+});
+
+describe("matched packages", () => {
+  it("records which dependency matched, from the manifest with the highest version", () => {
+    const found = detectFrameworks(
+      [npm({ "@mui/material": "^5.0.0" }), npm({ "@material-ui/core": "4.12.0" }), { kind: "pypi", deps: parseManifest("pypi", "Django==5.0\n") }],
+      ["vercel.json"],
+    );
+    expect(found.find((f) => f.name === "Material UI")).toMatchObject({ version: "5.0.0", package: "@mui/material", ecosystem: "npm" });
+    expect(found.find((f) => f.name === "Django")).toMatchObject({ package: "django", ecosystem: "pypi" });
+    expect(found.find((f) => f.name === "Vercel")).toMatchObject({ package: null, ecosystem: null });
   });
 });
