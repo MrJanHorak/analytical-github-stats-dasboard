@@ -4,9 +4,21 @@ import Link from "next/link";
 import { useMemo, useState } from "react";
 import type { RepoRow } from "@/lib/queries";
 import { fmt, rangeParam } from "@/lib/utils";
+import { healthColor, pct, rateColor } from "./format";
 import { Sparkline } from "./Sparkline";
 
-type Key = "fullName" | "views" | "viewUniques" | "clones" | "cloneUniques" | "stars" | "forks" | "linesOfCode" | "pushedAt";
+type Key =
+  | "fullName"
+  | "views"
+  | "viewUniques"
+  | "clones"
+  | "cloneUniques"
+  | "stars"
+  | "forks"
+  | "linesOfCode"
+  | "health"
+  | "ciPassRate"
+  | "pushedAt";
 
 const cols: { key: Key; label: string; numeric?: boolean }[] = [
   { key: "fullName", label: "Repository" },
@@ -18,6 +30,8 @@ const cols: { key: Key; label: string; numeric?: boolean }[] = [
   { key: "stars", label: "Stars", numeric: true },
   { key: "forks", label: "Forks", numeric: true },
   { key: "linesOfCode", label: "Lines", numeric: true },
+  { key: "health", label: "Health", numeric: true },
+  { key: "ciPassRate", label: "CI", numeric: true },
   { key: "pushedAt", label: "Last push" },
 ];
 
@@ -76,6 +90,11 @@ export function RepoTable({ repos, range }: { repos: RepoRow[]; range: number })
                     {r.name}
                   </Link>
                   {r.isPrivate && <span className="ml-2 rounded border border-zinc-700 px-1 text-[10px] text-zinc-400">private</span>}
+                  {(r.securityAlerts ?? 0) > 0 && (
+                    <span className="ml-2 rounded border border-red-900 px-1 text-[10px] text-red-400" title="Open Dependabot alerts">
+                      {r.securityAlerts} alert{r.securityAlerts === 1 ? "" : "s"}
+                    </span>
+                  )}
                   {r.description && <div className="max-w-md truncate text-xs text-zinc-500">{r.description}</div>}
                 </td>
                 <td className="px-3 py-2 text-right">
@@ -105,6 +124,12 @@ export function RepoTable({ repos, range }: { repos: RepoRow[]; range: number })
                 </td>
                 <td className="px-3 py-2 text-right tabular-nums text-zinc-400">
                   {r.linesOfCode === null ? "—" : fmt(r.linesOfCode)}
+                </td>
+                <td className={`px-3 py-2 text-right tabular-nums ${healthColor(r.health)}`} title="GitHub community health">
+                  {r.health === null ? "—" : `${r.health}%`}
+                </td>
+                <td className={`px-3 py-2 text-right tabular-nums ${rateColor(r.ciPassRate)}`} title="Actions pass rate in this range">
+                  {pct(r.ciPassRate)}
                 </td>
                 <td className="px-3 py-2 text-xs text-zinc-500">
                   {r.pushedAt ? new Date(r.pushedAt).toLocaleDateString() : "—"}

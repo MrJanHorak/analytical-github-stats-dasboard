@@ -268,3 +268,145 @@ export function monthlyCodeFrequency(weeks: number[][]) {
     .sort((a, b) => a.date.localeCompare(b.date))
     .map((m) => ({ ...m, net: (net += m.additions - m.deletions) }));
 }
+
+// --- Repo activity (M3.7) -----------------------------------------------------------------------
+
+export function median(nums: number[]): number | null {
+  if (!nums.length) return null;
+  const s = [...nums].sort((a, b) => a - b);
+  const mid = s.length >> 1;
+  return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+}
+
+/** Associations that mean "you or your team"; everything else opened by a human is an outside contribution. */
+const TEAM = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
+export const isOutside = (i: { authorAssociation: string; isBot: boolean }) => !i.isBot && !TEAM.has(i.authorAssociation);
+
+type IssueRow = {
+  isPr: boolean;
+  state: string;
+  author: string | null;
+  authorAssociation: string;
+  isBot: boolean;
+  createdAt: Date;
+  closedAt: Date | null;
+  mergedAt: Date | null;
+};
+
+const HOUR = 3_600_000;
+const inRange = (d: Date | null, since: Date) => !!d && d >= since;
+
+/**
+ * Issue & PR flow since `since`: opened/closed/merged counts, median hours to close issues and to
+ * merge PRs (for items closed/merged in the range), what's open now, and outside contributors.
+ */
+export function issueFlow(items: IssueRow[], since: Date) {
+  const iss = items.filter((i) => !i.isPr);
+  const prs = items.filter((i) => i.isPr);
+  const closedIssues = iss.filter((i) => inRange(i.closedAt, since));
+  const merged = prs.filter((p) => inRange(p.mergedAt, since));
+  const outside = items.filter((i) => inRange(i.createdAt, since) && isOutside(i));
+  const contributors = new Map<string, number>();
+  for (const o of outside) if (o.author) contributors.set(o.author, (contributors.get(o.author) ?? 0) + 1);
+  return {
+    issuesOpened: iss.filter((i) => inRange(i.createdAt, since)).length,
+    issuesClosed: closedIssues.length,
+    prsOpened: prs.filter((p) => inRange(p.createdAt, since)).length,
+    prsMerged: merged.length,
+    prsClosedUnmerged: prs.filter((p) => inRange(p.closedAt, since) && !p.mergedAt).length,
+    openIssues: iss.filter((i) => i.state === "open").length,
+    openPrs: prs.filter((p) => p.state === "open").length,
+    medianHoursToClose: median(closedIssues.map((i) => (i.closedAt!.getTime() - i.createdAt.getTime()) / HOUR)),
+    medianHoursToMerge: median(merged.map((p) => (p.mergedAt!.getTime() - p.createdAt.getTime()) / HOUR)),
+    outsideItems: outside.length,
+    outsideContributors: [...contributors.entries()]
+      .map(([login, count]) => ({ login, count }))
+      .sort((a, b) => b.count - a.count || a.login.localeCompare(b.login)),
+    botItems: items.filter((i) => inRange(i.createdAt, since) && i.isBot).length,
+  };
+}
+
+/** Weekly opened vs closed (issues + PRs) since `since`, for a chart. Weeks start on the Monday. */
+export function weeklyIssueFlow(items: IssueRow[], since: string, until: string) {
+  const weekOf = (d: string) => {
+    const t = new Date(d + "T00:00:00Z");
+    t.setUTCDate(t.getUTCDate() - ((t.getUTCDay() + 6) % 7));
+    return t.toISOString().slice(0, 10);
+  };
+  const out = new Map<string, { date: string; opened: number; closed: number }>();
+  for (let d = weekOf(since); d <= until; ) {
+    out.set(d, { date: d, opened: 0, closed: 0 });
+    const t = new Date(d + "T00:00:00Z");
+    t.setUTCDate(t.getUTCDate() + 7);
+    d = t.toISOString().slice(0, 10);
+  }
+  for (const i of items) {
+    const c = i.createdAt.toISOString().slice(0, 10);
+    if (c >= since && c <= until) out.get(weekOf(c))!.opened++;
+    const x = i.closedAt?.toISOString().slice(0, 10);
+    if (x && x >= since && x <= until) out.get(weekOf(x))!.closed++;
+  }
+  return [...out.values()];
+}
+
+/** Conclusions that count as a pass or a failure; cancelled/skipped/neutral runs are left out of the rate. */
+const PASS = new Set(["success"]);
+const FAIL = new Set(["failure", "timed_out", "startup_failure"]);
+
+type RunRow = {
+  workflow: string;
+  status: string;
+  conclusion: string | null;
+  createdAt: Date;
+  startedAt: Date | null;
+  updatedAt: Date;
+  branch?: string | null;
+  repo?: string;
+};
+
+function runSummary(runs: RunRow[]) {
+  const passed = runs.filter((r) => r.conclusion && PASS.has(r.conclusion)).length;
+  const failed = runs.filter((r) => r.conclusion && FAIL.has(r.conclusion)).length;
+  const durations = runs
+    .filter((r) => r.status === "completed" && r.startedAt && (PASS.has(r.conclusion ?? "") || FAIL.has(r.conclusion ?? "")))
+    .map((r) => (r.updatedAt.getTime() - r.startedAt!.getTime()) / 1000)
+    .filter((s) => s >= 0);
+  return {
+    runs: runs.length,
+    passed,
+    failed,
+    passRate: passed + failed ? passed / (passed + failed) : null,
+    medianSeconds: median(durations),
+  };
+}
+
+/** Actions stats since `since`: overall and per workflow (busiest first), plus recent failures. */
+export function ciStats(runs: RunRow[], since: Date) {
+  const recent = runs.filter((r) => r.createdAt >= since).sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+  const by = new Map<string, RunRow[]>();
+  for (const r of recent) {
+    const key = r.repo ? `${r.repo}\u0000${r.workflow}` : r.workflow;
+    if (!by.has(key)) by.set(key, []);
+    by.get(key)!.push(r);
+  }
+  return {
+    ...runSummary(recent),
+    workflows: [...by.values()]
+      .map((rs) => ({
+        workflow: rs[0].workflow,
+        repo: rs[0].repo,
+        ...runSummary(rs),
+        last: { conclusion: rs[0].conclusion ?? rs[0].status, at: rs[0].createdAt },
+      }))
+      .sort((a, b) => b.runs - a.runs || a.workflow.localeCompare(b.workflow)),
+    recentFailures: recent.filter((r) => r.conclusion && FAIL.has(r.conclusion)).slice(0, 5),
+  };
+}
+
+/** "3h", "2.5d", "45m" */
+export function shortDuration(hours: number | null): string {
+  if (hours === null) return "—";
+  if (hours < 1) return `${Math.max(1, Math.round(hours * 60))}m`;
+  if (hours < 48) return `${Math.round(hours * 10) / 10}h`;
+  return `${Math.round((hours / 24) * 10) / 10}d`;
+}

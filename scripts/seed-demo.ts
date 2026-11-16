@@ -6,7 +6,7 @@ import { eq, inArray, sql } from "drizzle-orm";
 import { getDb, schema } from "../src/lib/db";
 import { daysAgo, isoDay } from "../src/lib/utils";
 
-const { alerts, annotations, contributionDays, contributionRepos, contributionYears, profileSnapshots, repos, repoLanguages, repoLoc, repoSnapshots, trafficDaily, trafficWindows, referrers, popularPaths, releaseAssets, starEvents, forkEvents, syncRuns } =
+const { alerts, annotations, contributionDays, contributionRepos, contributionYears, profileSnapshots, issues, workflowRuns, repoHealth, repos, repoLanguages, repoLoc, repoSnapshots, trafficDaily, trafficWindows, referrers, popularPaths, releaseAssets, starEvents, forkEvents, syncRuns } =
   schema;
 
 // Deterministic PRNG so screenshots are stable
@@ -37,7 +37,7 @@ const DAYS = 120;
 async function main() {
   const db = getDb();
   const ids = DEMO.map((_, i) => 900001 + i);
-  for (const t of [alerts, annotations, repoLanguages, repoLoc, trafficDaily, trafficWindows, repoSnapshots, referrers, popularPaths, releaseAssets, starEvents, forkEvents]) {
+  for (const t of [alerts, annotations, issues, workflowRuns, repoHealth, repoLanguages, repoLoc, trafficDaily, trafficWindows, repoSnapshots, referrers, popularPaths, releaseAssets, starEvents, forkEvents]) {
     await db.delete(t).where(inArray(t.repoId, ids));
   }
   await db.delete(repos).where(inArray(repos.id, ids));
@@ -192,6 +192,104 @@ async function main() {
     { repoId: top, date: daysAgo(29), kind: "stars_burst", value: 23, message: `demo/${DEMO[0].name}: +23 stars on ${daysAgo(29)}` },
     { repoId: ids[1], date: daysAgo(6), kind: "stars_milestone_200", value: 200, message: `demo/${DEMO[1].name} reached 200 stars ⭐` },
   ]);
+
+  // Issues & PRs, Actions runs, community health and Dependabot alerts per repo
+  const PEOPLE = ["mira-k", "tobias-dev", "lena.codes", "sam-ruiz", "okafor", "j-chen"];
+  const HEALTH = [100, 85, 71, 57, 42, null]; // dotfiles: private → no community profile
+  const DEPENDABOT = [[0, 1, 2, 0], [0, 0, 1, 3], [0, 0, 0, 0], [1, 2, 1, 0], [0, 0, 0, 1], null] as const;
+  const at = (back: number, hour: number) => new Date(daysAgo(back) + `T${String(hour).padStart(2, "0")}:00:00Z`);
+  for (const [i, d] of DEMO.entries()) {
+    const repoId = ids[i];
+    const items: (typeof issues.$inferInsert)[] = [];
+    const count = Math.round(d.popularity / 2) + 4;
+    for (let n = 1; n <= count; n++) {
+      const back = int(1, DAYS);
+      const isPr = rand() < 0.45;
+      const bot = isPr && rand() < 0.2;
+      const outside = !bot && rand() < Math.min(0.7, d.popularity / 60);
+      const createdAt = at(back, int(8, 20));
+      const closes = rand() < 0.75 && back > 1;
+      const closedAt = closes ? new Date(createdAt.getTime() + int(1, Math.min(back, 12) * 24) * 3_600_000) : null;
+      items.push({
+        repoId,
+        number: n,
+        isPr,
+        title: isPr ? (bot ? "Bump dependencies" : `Improve ${["docs", "tests", "export", "mobile layout", "charts"][n % 5]}`) : `${["Bug", "Question", "Feature request", "Crash"][n % 4]}: ${["wing preview", "CSV export", "dark mode", "sync", "units"][n % 5]}`,
+        author: bot ? "dependabot[bot]" : outside ? PEOPLE[n % PEOPLE.length] : "demo",
+        authorAssociation: bot ? "NONE" : outside ? (n % 3 ? "CONTRIBUTOR" : "NONE") : "OWNER",
+        isBot: bot,
+        state: closes ? "closed" : "open",
+        createdAt,
+        closedAt,
+        mergedAt: isPr && closes && rand() < 0.85 ? closedAt : null,
+      });
+    }
+    await db.insert(issues).values(items);
+
+    if (i < 5) {
+      const runs: (typeof workflowRuns.$inferInsert)[] = [];
+      let id = repoId * 1000;
+      for (let back = 90; back >= 0; back--) {
+        const perDay = rand() < 0.6 ? int(1, Math.max(1, Math.round(d.popularity / 15))) : 0;
+        for (let k = 0; k < perDay; k++) {
+          const created = at(back, int(7, 22));
+          const roll = rand();
+          const conclusion = roll < 0.86 - i * 0.04 ? "success" : roll < 0.95 ? "failure" : "cancelled";
+          runs.push({
+            repoId,
+            runId: id++,
+            workflow: "CI",
+            event: "push",
+            branch: "main",
+            status: "completed",
+            conclusion,
+            createdAt: created,
+            startedAt: created,
+            updatedAt: new Date(created.getTime() + int(60, 240 + i * 60) * 1000),
+          });
+        }
+        if (back % 7 === 3) {
+          const created = at(back, 12);
+          runs.push({
+            repoId,
+            runId: id++,
+            workflow: "Deploy",
+            event: "workflow_dispatch",
+            branch: "main",
+            status: "completed",
+            conclusion: rand() < 0.95 ? "success" : "failure",
+            createdAt: created,
+            startedAt: created,
+            updatedAt: new Date(created.getTime() + int(30, 90) * 1000),
+          });
+        }
+      }
+      if (runs.length) await db.insert(workflowRuns).values(runs);
+    }
+
+    const h = HEALTH[i];
+    const dep = DEPENDABOT[i];
+    await db.insert(repoHealth).values({
+      repoId,
+      healthPercentage: h,
+      hasDescription: h === null ? null : true,
+      hasReadme: h === null ? null : true,
+      hasLicense: h === null ? null : h >= 57,
+      hasContributing: h === null ? null : h >= 71,
+      hasCodeOfConduct: h === null ? null : h >= 85,
+      hasIssueTemplate: h === null ? null : h >= 85,
+      hasPrTemplate: h === null ? null : h >= 100,
+      healthCheckedAt: new Date(),
+      dependabotCritical: dep?.[0] ?? null,
+      dependabotHigh: dep?.[1] ?? null,
+      dependabotMedium: dep?.[2] ?? null,
+      dependabotLow: dep?.[3] ?? null,
+      actionsAvailable: true,
+      issuesSyncedAt: new Date(),
+      runsSyncedAt: new Date(),
+      activitySyncedAt: new Date(),
+    });
+  }
 
   // Your activity (/me) for a "demo" account created three years ago
   for (const t of [contributionDays, contributionYears, contributionRepos, profileSnapshots]) await db.delete(t).where(eq(t.login, "demo"));

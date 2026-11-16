@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { CiPanel, IssueFlowPanel, SecurityCounts } from "@/components/Activity";
 import { TimeSeriesChart } from "@/components/charts";
 import { RangePicker } from "@/components/RangePicker";
 import { RepoTable } from "@/components/RepoTable";
@@ -154,6 +155,40 @@ export default async function Overview({ searchParams }: { searchParams: Promise
           )}
         </section>
       </div>
+
+      {data.activity.synced ? (
+        <>
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+            <IssueFlowPanel flow={data.activity.flow} weekly={data.activity.weekly} rangeLabel={`${rt} · your repos, forks and archived excluded`} />
+            <CiPanel ci={data.activity.ci} range={rangeParam(range)} showRepo />
+          </div>
+          {data.activity.security && (
+            <section className="min-w-0 rounded-xl border border-zinc-800 p-4">
+              <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+                <h2 className="text-sm font-medium text-zinc-400">Open Dependabot alerts</h2>
+                <span className="text-xs text-zinc-500">{data.activity.security.reposChecked} repos checked</span>
+              </div>
+              <SecurityCounts counts={data.activity.security} />
+              {data.activity.security.repos.length > 0 && (
+                <ul className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-sm">
+                  {data.activity.security.repos.map((r) => (
+                    <li key={r.fullName}>
+                      <Link href={`/repo/${r.fullName}?range=${rangeParam(range)}`} className="hover:text-accent">
+                        {r.name}
+                      </Link>{" "}
+                      <span className="tabular-nums text-xs text-red-400">{r.alerts}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          )}
+        </>
+      ) : (
+        <p className="rounded-xl border border-zinc-800 p-4 text-sm text-zinc-500">
+          Issues, pull requests, CI and community health appear after the next sync.
+        </p>
+      )}
 
       <RepoTable repos={data.repos} range={range} />
     </div>
