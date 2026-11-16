@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { CiPanel, IssueFlowPanel, SecurityCounts } from "@/components/Activity";
+import { FrameworksPanel } from "@/components/Frameworks";
 import { TimeSeriesChart } from "@/components/charts";
 import { RangePicker } from "@/components/RangePicker";
 import { RepoTable } from "@/components/RepoTable";
@@ -16,7 +17,9 @@ export const dynamic = "force-dynamic";
 
 export default async function Overview({ searchParams }: { searchParams: Promise<Record<string, string | string[]>> }) {
   if (!isDbConfigured()) return <SetupNotice />;
-  const range = parseRange((await searchParams).range);
+  const params = await searchParams;
+  const range = parseRange(params.range);
+  const q = typeof params.q === "string" ? params.q : "";
   const data = await getOverview(range);
   if (!data.repos.length) return <SetupNotice />;
   const { totals, previous, code } = data;
@@ -156,6 +159,8 @@ export default async function Overview({ searchParams }: { searchParams: Promise
         </section>
       </div>
 
+      <FrameworksPanel groups={code.frameworks} range={rangeParam(range)} reposCounted={code.reposCounted} />
+
       {data.activity.synced ? (
         <>
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
@@ -195,7 +200,7 @@ export default async function Overview({ searchParams }: { searchParams: Promise
         </p>
       )}
 
-      <RepoTable repos={data.repos} range={range} />
+      <RepoTable key={q} repos={data.repos} range={range} initialQuery={q} />
     </div>
   );
 }

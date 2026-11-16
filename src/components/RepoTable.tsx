@@ -35,14 +35,18 @@ const cols: { key: Key; label: string; numeric?: boolean }[] = [
   { key: "pushedAt", label: "Last push" },
 ];
 
-export function RepoTable({ repos, range }: { repos: RepoRow[]; range: number }) {
+export function RepoTable({ repos, range, initialQuery = "" }: { repos: RepoRow[]; range: number; initialQuery?: string }) {
   const [sort, setSort] = useState<{ key: Key; dir: 1 | -1 }>({ key: "views", dir: -1 });
-  const [q, setQ] = useState("");
+  const [q, setQ] = useState(initialQuery);
   const [hideForks, setHideForks] = useState(true);
 
   const rows = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    // Matches the repo name, or a framework/tool it uses ("next.js", "tailwind")
     const filtered = repos.filter(
-      (r) => (!hideForks || !r.isFork) && r.fullName.toLowerCase().includes(q.toLowerCase()),
+      (r) =>
+        (!hideForks || !r.isFork) &&
+        (r.fullName.toLowerCase().includes(needle) || r.frameworks.some((f) => f.toLowerCase().startsWith(needle))),
     );
     return filtered.sort((a, b) => {
       const av = a[sort.key] ?? "";
@@ -52,12 +56,12 @@ export function RepoTable({ repos, range }: { repos: RepoRow[]; range: number })
   }, [repos, sort, q, hideForks]);
 
   return (
-    <div className="rounded-xl border border-zinc-800">
+    <div id="repos" className="scroll-mt-4 rounded-xl border border-zinc-800">
       <div className="flex flex-wrap items-center gap-3 border-b border-zinc-800 p-3">
         <input
           value={q}
           onChange={(e) => setQ(e.target.value)}
-          placeholder="Filter repos…"
+          placeholder="Filter by name or framework…"
           className="w-56 rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-sm outline-none focus:border-accent"
         />
         <label className="flex items-center gap-1.5 text-sm text-zinc-400">

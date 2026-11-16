@@ -64,6 +64,19 @@ export const repoLoc = pgTable(
   (t) => [primaryKey({ columns: [t.repoId, t.language] })],
 );
 
+/** Frameworks & tools detected from the default branch's manifests/config files (replaced on recount). */
+export const repoFrameworks = pgTable(
+  "repo_frameworks",
+  {
+    repoId: repoId(),
+    framework: text("framework").notNull(),
+    category: text("category").notNull(),
+    /** Declared version (highest across manifests), null when not pinned or detected from a config file */
+    version: text("version"),
+  },
+  (t) => [primaryKey({ columns: [t.repoId, t.framework] })],
+);
+
 export const repoSnapshots = pgTable(
   "repo_snapshots",
   {

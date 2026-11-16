@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { compact, renderBadge } from "@/lib/badge";
 import {
   aggregateContributedRepos,
+  aggregateFrameworks,
   aggregateLanguages,
   bucket,
   ciStats,
@@ -379,5 +380,26 @@ describe("shortDuration", () => {
     expect(shortDuration(5.04)).toBe("5h");
     expect(shortDuration(72)).toBe("3d");
     expect(shortDuration(null)).toBe("—");
+  });
+});
+
+describe("aggregateFrameworks", () => {
+  it("groups by category in the given order, counts repos and keeps the newest version", () => {
+    const rows = [
+      { repoId: 1, framework: "React", category: "Frontend", version: "18.2.0" },
+      { repoId: 2, framework: "React", category: "Frontend", version: "19.0.0" },
+      { repoId: 2, framework: "Vue", category: "Frontend", version: null },
+      { repoId: 3, framework: "Docker", category: "Deployment", version: null },
+    ];
+    expect(aggregateFrameworks(rows, ["Frontend", "Backend", "Deployment"])).toEqual([
+      {
+        category: "Frontend",
+        frameworks: [
+          { name: "React", category: "Frontend", repos: 2, newest: "19.0.0" },
+          { name: "Vue", category: "Frontend", repos: 1, newest: null },
+        ],
+      },
+      { category: "Deployment", frameworks: [{ name: "Docker", category: "Deployment", repos: 1, newest: null }] },
+    ]);
   });
 });

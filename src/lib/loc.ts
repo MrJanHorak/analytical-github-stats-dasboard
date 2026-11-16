@@ -2,6 +2,7 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { createGunzip } from "node:zlib";
 import { extract } from "tar-stream";
+import { detectFrameworks, isConfigSignal, manifestKind, parseManifest, type DetectedFramework } from "./frameworks";
 
 /**
  * Lines-of-code counting from a repository tarball, streamed (never written to disk).
@@ -226,6 +227,8 @@ export type LocSummary = {
   lines: number;
   files: number;
   languages: LanguageLoc[];
+  /** Frameworks and tools from dependency manifests and config files (see src/lib/frameworks.ts) */
+  frameworks: DetectedFramework[];
 };
 
 /** Apply default skip rules and .gitattributes, then total per language (largest first). */
@@ -247,6 +250,7 @@ export function summarize(files: CountedFile[], rules: AttrRule[]): LocSummary {
   }
   const languages = [...by.values()].sort((a, b) => b.nonBlank - a.nonBlank || a.language.localeCompare(b.language));
   return {
+    frameworks: [],
     nonBlank: languages.reduce((a, l) => a + l.nonBlank, 0),
     lines: languages.reduce((a, l) => a + l.lines, 0),
     files: languages.reduce((a, l) => a + l.files, 0),
@@ -261,6 +265,8 @@ export function summarize(files: CountedFile[], rules: AttrRule[]): LocSummary {
 export async function countTarball(gzipped: Readable): Promise<LocSummary> {
   const files: CountedFile[] = [];
   const rules: AttrRule[] = [];
+  const manifests: { kind: NonNullable<ReturnType<typeof manifestKind>>; deps: Map<string, string | null> }[] = [];
+  const configPaths: string[] = [];
   const tar = extract();
 
   tar.on("entry", (header, stream, next) => {
@@ -271,8 +277,12 @@ export async function countTarball(gzipped: Readable): Promise<LocSummary> {
     const isAttrs = name === ".gitattributes";
     const language = header.type === "file" && path ? languageForPath(path) : null;
     const size = header.size ?? 0;
+    const skip = defaultSkipReason(path);
+    // Manifests and config files outside vendored/build dirs feed framework detection
+    const manifest = header.type === "file" && path && skip !== "vendored" ? manifestKind(path) : null;
+    if (header.type === "file" && path && skip !== "vendored" && isConfigSignal(path)) configPaths.push(path);
 
-    if ((!language && !isAttrs) || size > MAX_FILE_BYTES || defaultSkipReason(path) === "lockfile") {
+    if ((!language && !isAttrs && !manifest) || size > MAX_FILE_BYTES || skip === "lockfile") {
       stream.on("end", done);
       stream.resume();
       return;
@@ -281,6 +291,7 @@ export async function countTarball(gzipped: Readable): Promise<LocSummary> {
     stream.on("data", (c: unknown) => void chunks.push(c as Buffer));
     stream.on("end", () => {
       const buf = Buffer.concat(chunks);
+      if (manifest) manifests.push({ kind: manifest, deps: parseManifest(manifest, buf.toString("utf8")) });
       if (isAttrs) rules.push(...parseGitattributes(buf.toString("utf8"), dirname(path)));
       else if (language) {
         const counted = countLines(buf);
@@ -291,5 +302,5 @@ export async function countTarball(gzipped: Readable): Promise<LocSummary> {
   });
 
   await pipeline(gzipped, createGunzip(), tar);
-  return summarize(files, rules);
+  return { ...summarize(files, rules), frameworks: detectFrameworks(manifests, configPaths) };
 }

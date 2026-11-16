@@ -13,6 +13,7 @@ A self-hosted Next.js dashboard for **views, unique visitors, clones, referrers,
 | **Overview** | Totals with % change vs the previous period, issue/PR flow, CI pass rates, open Dependabot alerts, language and lines-of-code totals, a 🤖 hint on clones that look automated, daily traffic chart, sortable/filterable repo table with sparklines, top referrers with trends, recent alerts, CSV export |
 | **Repo detail** | Views & clones (total vs unique), full star & fork history, recent stargazers and forks, referrer trend, popular content, languages, lines of code by language, likely-automated clone hint, weekly commits, code growth (lines added/deleted per month), release downloads |
 | **Code** | Languages across all your repos (share of bytes, repos per language) and real lines of code per repo, per language and in total — counted from each repo's default branch with lock files, vendored, generated and non-code files left out, and recounted only when the default branch gets a new commit. Forks are left out of the totals |
+| **Frameworks & tools** | What each repo is built with — React, Next.js, Django, Tailwind, Prisma, Vitest, Docker, … about 100 frameworks and tools in 10 categories — read from dependency manifests and config files while lines are counted (no extra API calls). Overview shows how many repos use each and the newest version; click one to filter the repo table. Repo pages show them as tags |
 | **Your activity** | `/me`: your contributions in any repo, as GitHub counts them — all-time commits, pull requests, issues and reviews, a contribution heatmap with current and longest streak, totals per year, the repos you contribute to most (yours and others'), and follower growth |
 | **Project activity** | Issues and pull requests opened/closed/merged, median time to close and to merge, what's open now and who your outside contributors are (bots and your team left out); GitHub Actions pass rate, run count and duration per workflow plus recent failures; GitHub's community-health score and checklist (README, license, contributing guide, …) and open Dependabot alerts by severity. In the repo table: health and CI columns and an alerts badge |
 | **History** | Traffic is stored daily, so it outlives GitHub's 14-day limit. Star and fork history is rebuilt from GitHub's timestamps, back to the day each repo was created |
@@ -29,6 +30,10 @@ A self-hosted Next.js dashboard for **views, unique visitors, clones, referrers,
 <td width="50%"><b>Lines of code</b> — total, by language and largest repos<br><img src="docs/lines-of-code.png" alt="Lines of code"></td>
 </tr>
 </table>
+
+### Frameworks & tools
+
+![Frameworks and tools](docs/frameworks.png)
 
 ### Your activity
 
@@ -140,6 +145,8 @@ GitHub has no "lines of code" number, so the sync counts them itself: it streams
 - Anything your `.gitattributes` marks `linguist-generated`, `linguist-vendored` or `linguist-documentation`. It works the other way too: `dist/** -linguist-vendored` counts a directory back in, and `*.inc linguist-language=PHP` changes the language
 
 A repo is only re-downloaded when its default branch has a new commit, so pushes to other branches cost one API call. Repos larger than 500 MB are skipped. Counting needs the token's **Contents: Read-only** permission. The language bars still show GitHub's Linguist byte counts next to the line counts.
+
+While streaming the tarball the sync also reads dependency manifests — every `package.json` (so monorepos work), `requirements*.txt`, `pyproject.toml`, `Pipfile`, `setup.py`, `Gemfile`, `composer.json`, `go.mod`, `Cargo.toml`, `pom.xml`, `build.gradle` — and notes tell-tale config files (`next.config.*`, `vite.config.*`, `tailwind.config.*`, `Dockerfile`, `.github/workflows/*`, `vercel.json`, `fly.toml`, …). The rules live in `src/lib/frameworks.ts`; add a line there to detect something new. Detection is based on *declared* dependencies, like GitHub's dependency graph: a package that is listed but never imported still counts. Manifests in vendored or build folders are ignored, and when manifests disagree the highest version is shown.
 
 GitHub doesn't say who viewed or cloned a repo, so there is no way to separate people from bots. The 🤖 hint is a heuristic: a repo with at least 10 clones and more than twice as many clones as views in the selected range is flagged, because CI runs, mirrors and deploy hosts (Vercel and Netlify clone on every build) clone without ever opening the page.
 

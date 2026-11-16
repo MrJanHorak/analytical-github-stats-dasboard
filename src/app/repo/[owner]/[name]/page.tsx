@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { CiPanel, HealthChecklist, IssueFlowPanel, SecurityCounts } from "@/components/Activity";
 import { TimeSeriesChart } from "@/components/charts";
+import { FrameworkTags } from "@/components/Frameworks";
 import { healthColor } from "@/components/format";
 import { RangePicker } from "@/components/RangePicker";
 import { SetupNotice } from "@/components/SetupNotice";
@@ -230,6 +231,7 @@ export default async function RepoPage({ params, searchParams }: Props) {
         />
         <section className="min-w-0 rounded-xl border border-zinc-800 p-4">
           <h2 className="text-sm font-medium text-zinc-400">Code</h2>
+          <FrameworkTags frameworks={data.frameworks} />
           <p
             className="mb-3 text-xs text-zinc-500"
             title="Non-blank lines on the default branch. Lock files, vendored and build directories, generated and minified files, and non-code files (Markdown, JSON, YAML) are left out; .gitattributes linguist-* rules are honoured."

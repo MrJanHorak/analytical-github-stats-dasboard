@@ -1,7 +1,9 @@
 import { and, asc, desc, eq, gte, inArray, lt, or, sql, type AnyColumn } from "drizzle-orm";
 import { getDb, schema } from "./db";
+import { CATEGORIES } from "./frameworks";
 import {
   aggregateContributedRepos,
+  aggregateFrameworks,
   aggregateLanguages,
   bucket,
   ciStats,
@@ -23,6 +25,7 @@ const {
   annotations,
   repos,
   repoLanguages,
+  repoFrameworks,
   repoLoc,
   repoSnapshots,
   trafficDaily,
@@ -151,7 +154,7 @@ export async function getOverview(rangeDays: number) {
   const db = getDb();
   const { since, until, prevSince } = await windowFor(rangeDays);
 
-  const [allRepos, traffic, perRepoDaily, daily, prev, latestSnaps, starsGained, forksGained, lastRun, langRows, locRows] =
+  const [allRepos, traffic, perRepoDaily, daily, prev, latestSnaps, starsGained, forksGained, lastRun, langRows, locRows, fwRows] =
     await Promise.all([
       db.select().from(repos),
       db.select({ repoId: trafficDaily.repoId, ...trafficSums }).from(trafficDaily).where(gte(trafficDaily.date, since)).groupBy(trafficDaily.repoId),
@@ -186,6 +189,7 @@ export async function getOverview(rangeDays: number) {
       db.select().from(syncRuns).orderBy(desc(syncRuns.startedAt)).limit(1),
       db.select().from(repoLanguages),
       db.select({ repoId: repoLoc.repoId, language: repoLoc.language, bytes: repoLoc.nonBlank }).from(repoLoc),
+      db.select().from(repoFrameworks),
     ]);
 
   const activity = await loadActivity(since, until);
@@ -195,6 +199,8 @@ export async function getOverview(rangeDays: number) {
     if (!runsBy.has(r.repoId)) runsBy.set(r.repoId, []);
     runsBy.get(r.repoId)!.push(r);
   }
+  const frameworksBy = new Map<number, string[]>();
+  for (const f of fwRows) frameworksBy.set(f.repoId, [...(frameworksBy.get(f.repoId) ?? []), f.framework]);
   const trafficBy = new Map(traffic.map((t) => [t.repoId, t]));
   const snapBy = new Map(latestSnaps.map((s) => [s.repoId, s]));
   const starsBy = new Map(starsGained.map((s) => [s.repoId, s.n]));
@@ -226,6 +232,8 @@ export async function getOverview(rangeDays: number) {
       ciPassRate: runsBy.has(r.id) ? ciStats(runsBy.get(r.id)!, new Date(since + "T00:00:00Z")).passRate : null,
       /** Open Dependabot alerts, null when unavailable */
       securityAlerts: alertTotal(healthBy.get(r.id)),
+      /** Frameworks & tools detected in the repo (names) */
+      frameworks: frameworksBy.get(r.id) ?? [],
     };
   });
 
@@ -237,6 +245,8 @@ export async function getOverview(rangeDays: number) {
     languages: aggregateLanguages(langRows.filter((l) => ownIds.has(l.repoId))),
     /** Non-blank lines per language (in the `bytes` field, so the same helpers/components work) */
     linesByLanguage: aggregateLanguages(locRows.filter((l) => ownIds.has(l.repoId))),
+    /** Frameworks & tools across your repos (forks excluded), by category */
+    frameworks: aggregateFrameworks(fwRows.filter((f) => ownIds.has(f.repoId)), CATEGORIES),
     linesOfCode: withLines.reduce((a, r) => a + (r.linesOfCode ?? 0), 0),
     reposWithLines: withLines.length,
     reposCounted: ownRepos.length,
@@ -368,7 +378,7 @@ export async function getRepoDetail(owner: string, name: string, rangeDays: numb
   const latestFor = (table: typeof referrers | typeof popularPaths | typeof releaseAssets) =>
     sql`${table.date} = (select max(date) from ${table} where repo_id = ${repo.id})`;
 
-  const [daily, prev, latestSnap, refs, paths, assets, downloadsByDay, stars, forks, windows, refHistory, notes, repoAlerts, langs, loc] = await Promise.all([
+  const [daily, prev, latestSnap, refs, paths, assets, downloadsByDay, stars, forks, windows, refHistory, notes, repoAlerts, langs, loc, frameworks] = await Promise.all([
     db
       .select()
       .from(trafficDaily)
@@ -421,6 +431,10 @@ export async function getRepoDetail(owner: string, name: string, rangeDays: numb
       .from(repoLoc)
       .where(eq(repoLoc.repoId, repo.id))
       .orderBy(desc(repoLoc.nonBlank)),
+    db
+      .select({ name: repoFrameworks.framework, category: repoFrameworks.category, version: repoFrameworks.version })
+      .from(repoFrameworks)
+      .where(eq(repoFrameworks.repoId, repo.id)),
   ]);
 
   // Trend for the referrers that matter most right now (top 5 in the latest window)
@@ -458,6 +472,10 @@ export async function getRepoDetail(owner: string, name: string, rangeDays: numb
     languages: langs,
     /** Lines of code per language on the default branch; empty until counted */
     loc,
+    /** Frameworks & tools, in category order */
+    frameworks: frameworks.sort(
+      (a, b) => CATEGORIES.indexOf(a.category as (typeof CATEGORIES)[number]) - CATEGORIES.indexOf(b.category as (typeof CATEGORIES)[number]) || a.name.localeCompare(b.name),
+    ),
     activity: {
       synced: activity.synced,
       flow: activity.flow,
