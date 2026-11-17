@@ -93,8 +93,10 @@ export async function installUrl(): Promise<string> {
   try {
     const slug = await getAppSlug();
     if (slug) return `https://github.com/apps/${slug}/installations/new`;
-  } catch {
-    // fall through
+    console.error("install link: GitHub returned no App slug");
+  } catch (err) {
+    // Usually a wrong GITHUB_APP_ID or GITHUB_APP_PRIVATE_KEY; syncs will fail the same way.
+    console.error("install link: could not authenticate as the GitHub App", err);
   }
   return "https://github.com/settings/installations";
 }
