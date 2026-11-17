@@ -19,8 +19,8 @@ A self-hosted Next.js dashboard for **views, unique visitors, clones, referrers,
 | **Deployments** | Production and preview deploys per week and their success rate, per repo — from the deployments Vercel, Netlify, GitHub Pages and Actions environments report to GitHub |
 | **Project activity** | Issues and pull requests opened/closed/merged, median time to close and to merge, what's open now and who your outside contributors are (bots and your team left out); GitHub Actions pass rate, run count and duration per workflow plus recent failures; GitHub's community-health score and checklist (README, license, contributing guide, …) and open Dependabot alerts by severity. In the repo table: health and CI columns and an alerts badge |
 | **History** | Traffic is stored daily, so it outlives GitHub's 14-day limit. Star and fork history is rebuilt from GitHub's timestamps, back to the day each repo was created |
-| **Alerts** | Traffic spikes, star bursts and star milestones, shown in the app and optionally posted to Slack or Discord |
-| **Notes** | Pin notes like "Posted on Hacker News" to a date; they show as markers on the charts |
+| **Alerts** | Traffic spikes, star bursts and star milestones, shown in the app and optionally posted to Slack or Discord. Each repo can be muted or given its own thresholds from its page |
+| **Notes & releases** | Pin notes like "Posted on Hacker News" to a date; they show as markers on the charts. GitHub releases are marked automatically (🚀, green) |
 | **Badges** | `views/month`, `visitors`, `clones`, `stars`, `forks` SVG badges for your READMEs (public repos only) |
 | **Ranges** | 7 / 14 / 30 / 90 / 365 days / all time |
 
@@ -123,13 +123,19 @@ After each sync these are recorded for **yesterday**:
 | Star burst | ≥ `ALERT_STAR_BURST` new stars in one day |
 | Star milestone | crossing 10, 25, 50, 100, 250, 500, 1k, 2.5k, 5k, 10k… stars |
 
+**Per-repo settings:** open *Alert settings* under a repo's *Notes & alerts* to mute that repo, turn its star-milestone alerts off, or give it its own spike factor, minimum views/clones and star-burst size. Blank fields use the global `ALERT_*` values (shown greyed), and *Reset to defaults* removes the override. Changes apply from the next sync.
+
+![Alert settings](docs/alert-settings.png)
+
 A repo needs a week of stored history before spikes are judged, so a fresh install doesn't flag everything. Alerts appear on the overview, in each repo's *Notes & alerts* list, and as amber markers on the charts. Each alert is recorded only once, even if the sync runs again.
 
 **Slack / Discord:** create an incoming webhook ([Slack](https://api.slack.com/messaging/webhooks), [Discord](https://support.discord.com/hc/en-us/articles/228383668)) and set `ALERT_WEBHOOK_URL`. Set `APP_URL` too if you want each message to link back to the repo page.
 
 ## Notes
 
-Use the form on a repo page to pin a note to a date, such as a launch, a blog post or a release. Notes show as grey markers on that repo's charts and on the overview chart. Hover a marker to read it.
+Use the form on a repo page to pin a note to a date, such as a launch or a blog post. Notes show as grey markers on that repo's charts and on the overview chart. Hover a marker to read it.
+
+**Releases** are marked for you: every published GitHub release (drafts left out) shows as a green 🚀 marker on the repo's charts and in its *Notes & alerts* list, linked to the release page. The overview chart marks your own repos' releases, leaving out pre-releases and forks to stay readable.
 
 ## Badges
 

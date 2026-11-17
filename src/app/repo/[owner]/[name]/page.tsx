@@ -10,7 +10,8 @@ import { SetupNotice } from "@/components/SetupNotice";
 import { LanguageBars } from "@/components/LanguageBars";
 import { StatCard } from "@/components/StatCard";
 import { isDbConfigured } from "@/lib/db";
-import { addNote, deleteNote } from "./actions";
+import { addNote, deleteNote, saveAlertSettings } from "./actions";
+import { AlertSettingsForm } from "@/components/AlertSettingsForm";
 import { getCodeFrequency, getCommitActivity, getLanguages } from "@/lib/github-cached";
 import { getRepoDetail } from "@/lib/queries";
 import { monthlyCodeFrequency } from "@/lib/transform";
@@ -192,18 +193,34 @@ export default async function RepoPage({ params, searchParams }: Props) {
           />
           <button className="rounded-md bg-zinc-800 px-3 py-1 text-sm hover:bg-zinc-700">Add note</button>
         </form>
-        {data.notes.length || data.alerts.length ? (
+        {data.notes.length || data.alerts.length || data.releases.length ? (
           <ul className="space-y-1.5 text-sm">
             {[
-              ...data.notes.map((n) => ({ key: `n${n.id}`, date: n.date, text: n.label, note: n })),
-              ...data.alerts.map((a) => ({ key: `a${a.id}`, date: a.date, text: a.message, note: null })),
+              ...data.notes.map((n) => ({ key: `n${n.id}`, date: n.date, text: n.label, note: n, kind: "note" as const, url: null })),
+              ...data.alerts.map((a) => ({ key: `a${a.id}`, date: a.date, text: a.message, note: null, kind: "alert" as const, url: null })),
+              ...data.releases.map((r) => ({
+                key: `r${r.tag}`,
+                date: isoDay(r.publishedAt),
+                text: `Released ${r.tag}${r.name && r.name !== r.tag ? ` — ${r.name}` : ""}${r.prerelease ? " (pre-release)" : ""}`,
+                note: null,
+                kind: "release" as const,
+                url: r.url,
+              })),
             ]
               .sort((a, b) => b.date.localeCompare(a.date))
               .map((item) => (
                 <li key={item.key} className="flex items-center gap-2">
                   <span className="w-24 shrink-0 text-xs tabular-nums text-zinc-500">{item.date}</span>
-                  <span className={item.note ? "text-zinc-200" : "text-amber-300"}>{item.note ? "📝" : "⚡"}</span>
-                  <span className="min-w-0 flex-1 truncate">{item.text}</span>
+                  <span className={item.kind === "note" ? "text-zinc-200" : item.kind === "release" ? "text-emerald-400" : "text-amber-300"}>
+                    {item.kind === "note" ? "📝" : item.kind === "release" ? "🚀" : "⚡"}
+                  </span>
+                  {item.url ? (
+                    <a href={item.url} target="_blank" className="min-w-0 flex-1 truncate hover:text-accent">
+                      {item.text}
+                    </a>
+                  ) : (
+                    <span className="min-w-0 flex-1 truncate">{item.text}</span>
+                  )}
                   {item.note && (
                     <form action={deleteNote}>
                       <input type="hidden" name="id" value={item.note.id} />
@@ -218,10 +235,16 @@ export default async function RepoPage({ params, searchParams }: Props) {
           </ul>
         ) : (
           <p className="text-sm text-zinc-500">
-            No notes yet. Add one to mark launches or posts on the charts — traffic spikes and star milestones appear here
-            automatically.
+            No notes yet. Add one to mark launches or posts on the charts — releases, traffic spikes and star milestones
+            appear here automatically.
           </p>
         )}
+        <AlertSettingsForm
+          fullName={repo.fullName}
+          override={data.alertSettings.override}
+          defaults={data.alertSettings.defaults}
+          action={saveAlertSettings}
+        />
       </section>
 
       {data.referrerTrend.data.length > 1 && (

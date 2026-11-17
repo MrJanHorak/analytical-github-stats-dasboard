@@ -22,7 +22,7 @@ Run the collector at least every ~13 days; daily is recommended so you also get 
 | Top referrers (top 10) | `GET /repos/{o}/{r}/traffic/popular/referrers` | 14-day aggregate | snapshot per sync day |
 | Top content/paths (top 10) | `GET /repos/{o}/{r}/traffic/popular/paths` | 14-day aggregate | snapshot per sync day |
 | Stars, forks, watchers, open issues, size | `GET /user/repos` | current value | snapshot daily → growth charts |
-| Release asset downloads | `GET /repos/{o}/{r}/releases` | cumulative | snapshot daily → downloads/day |
+| Releases + asset downloads | `GET /repos/{o}/{r}/releases` | cumulative | published releases → chart markers (replaced each sync); asset downloads snapshot daily → downloads/day |
 | Languages | `GET /repos/{o}/{r}/languages` | current | bytes per language; stored when the repo is pushed |
 | Default-branch commit | `GET /repos/{o}/{r}/branches/{branch}` | current | decides whether lines need recounting |
 | Repo tarball | `GET /repos/{o}/{r}/tarball/{sha}` | per commit | streamed and counted for lines of code, and its manifests/config files read for frameworks (Contents: read) |
@@ -97,6 +97,10 @@ repo_health      (repo_id) PK — health_percentage, has_readme/license/code_of_
 code_snapshots   (repo_id, date) PK — lines_of_code, test_lines, todo_count, commit_sha   [one per recount day]
 deployments      (repo_id, deployment_id) PK — environment, production, ref, creator, created_at, state
 package_versions (ecosystem, package) PK — latest, checked_at   [npm / PyPI latest release, daily]
+
+releases         (repo_id, release_id) PK — tag, name, published_at, prerelease, url   [published only; replaced each sync]
+alert_settings   (repo_id) PK — muted, milestones, spike_factor, min_views, min_clones, star_burst, updated_at
+                 [per-repo overrides; null = global ALERT_* default]
 ```
 
 All writes are upserts, so re-running the sync is safe and the partial "today" row simply gets corrected next run.
@@ -105,13 +109,13 @@ All writes are upserts, so re-running the sync is safe and the partial "today" r
 
 1. Cron route is authenticated by `Authorization: Bearer $CRON_SECRET` (Vercel sends this automatically).
 2. List all owned repos (paginated) → upsert `repos` + today's `repo_snapshots`.
-3. **Traffic first** (concurrency 4, skipping archived repos): views, clones, 14-day totals, referrers, paths, releases → upsert. This always runs in full because GitHub deletes it after 14 days.
+3. **Traffic first** (concurrency 4, skipping archived repos): views, clones, 14-day totals, referrers, paths, releases (published ones replace the repo's `releases` rows; asset downloads snapshot) → upsert. This always runs in full because GitHub deletes it after 14 days.
 4. **History second**: refetch stargazers/forks only for repos whose count changed, smallest first, until `SYNC_TIME_BUDGET_MS` (cron default 45s; CLI unlimited). Leftovers resume next run.
 5. **Code stats**: for repos pushed since they were last checked, refresh languages; then, if the default branch has a new commit, stream its tarball and count lines (`src/lib/loc.ts`: non-blank lines in code files; lock files, vendored/build dirs, minified, binary, >1 MB and `.gitattributes` linguist-generated/vendored/documentation files left out). Two at a time, same time budget as history; leftovers and failures resume next run. Repos over 500 MB are skipped. The same pass reads dependency manifests and config files for frameworks & tools (`src/lib/frameworks.ts`: ~100 rules in 10 categories; manifests in vendored dirs ignored; highest declared version wins). It also counts test lines (`isTestPath`) and TODO/FIXME/HACK markers and upserts today's `code_snapshots` row.
 6. **Package versions** (`src/lib/sync-packages.ts`): latest release of each distinct npm/PyPI package a framework was detected from, at most once a day each.
 7. **Your contributions** (right after traffic, `src/lib/sync-contributions.ts`): snapshot followers; fetch each calendar year that has never been stored or wasn't synced after it ended, newest first (first run = full backfill to account creation; afterwards just the current year). Same time budget.
 8. **Repo activity** (`src/lib/sync-activity.ts`, your own non-fork, non-archived repos, least recently synced first, same time budget): issues & PRs updated since the last sync (10-minute overlap; everything on the first run), Actions runs created since the last sync minus a day (so in-progress runs get their conclusion; 90 days on the first run), open Dependabot alerts, deployments created since the last sync (90 days the first time; production = environment named production/prod/live/github-pages, not preview/staging) plus up to 20 status lookups per repo for deployments still unknown or in progress, and the community profile when the repo was pushed or the last check is a week old. Missing Issues/PRs, Actions, Deployments or Dependabot permissions are recorded (`issues_available`, `actions_available`, `deployments_available`, null counts), not errors; the issues marker is kept so nothing is missed once access is granted.
-9. **Alerts**: judge yesterday against stored history → insert into `alerts` (idempotent) → post unnotified ones to `ALERT_WEBHOOK_URL`.
+9. **Alerts**: judge yesterday against stored history with each repo's effective thresholds (`alert_settings` overrides, else global `ALERT_*`; muted repos skipped) → insert into `alerts` (idempotent) → post unnotified ones to `ALERT_WEBHOOK_URL`.
 10. Record a `sync_runs` row. About 5 requests per repo plus history refreshes, so 100 repos ≈ 500 requests, well under the 5,000/hour limit.
 
 ## 7. UI
@@ -132,6 +136,8 @@ All writes are upserts, so re-running the sync is safe and the partial "today" r
 
 Repo detail also gets a **code growth** chart: lines added/deleted per month from `stats/code_frequency` (live, cached).
 
+**Releases & alert settings** (M4a): green 🚀 release markers on repo charts (all published releases) and the overview chart (your repos, no pre-releases); releases join each repo's *Notes & alerts* list with links; when markers crowd, labels alternate between two rows. A collapsible *Alert settings* form under *Notes & alerts* (server action, behind the dashboard password) sets mute / milestones / spike factor / min views / min clones / star burst for that repo.
+
 **Badges `/api/badge/[owner]/[name]`**: public SVG for public repos only.
 
 ## 8. Roadmap
@@ -145,6 +151,6 @@ Repo detail also gets a **code growth** chart: lines added/deleted per month fro
 - **M3.7 ✅** community health checklist column (`/community/profile`); issue/PR flow (open vs closed, median time to close/merge, outside contributors); Actions CI pass rate + durations; optional Dependabot alert counts (extra permission). Incremental activity sync (~3 requests/repo/day).
 - **M3.8 ✅** frameworks & tools detected from manifests and config files during the tarball pass (npm, PyPI, RubyGems, Composer, Go, Cargo, Maven/Gradle + config files), overview panel by category, table filter, repo tags. Migration forces one recount of every repo.
 - **M3.9 ✅** code health: test share and TODOs from the tarball pass, daily code snapshots → lines over time, frameworks a major behind their latest npm/PyPI release; deployment frequency and success rate from the Deployments API. Migration forces one more recount.
-- **M4a:** release-date markers from GitHub releases; per-repo alert thresholds.
+- **M4a ✅** release-date markers from GitHub releases (repo + overview charts, Notes & alerts list); per-repo alert thresholds, mute and milestone toggle.
 - **M4b:** multi-user via a **GitHub App** (not an OAuth App — its `repo` scope would grant write access to every private repo) + Auth.js "Sign in with GitHub". Users install the App on chosen repos (Administration, Contents, Metadata: read); the cron uses installation tokens so syncs run with nobody logged in; every query scoped by owner; sync fanned out across installations.
 - **M4c:** email alerts.

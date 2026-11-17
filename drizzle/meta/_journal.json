@@ -78,6 +78,13 @@
       "when": 1794855136723,
       "tag": "0010_code_health",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1794856766080,
+      "tag": "0011_releases_alert_settings",
+      "breakpoints": true
     }
   ]
 }

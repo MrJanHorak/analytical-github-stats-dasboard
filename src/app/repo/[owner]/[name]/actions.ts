@@ -3,8 +3,9 @@
 import { and, eq } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { getDb, schema } from "@/lib/db";
+import { parseAlertOverride } from "@/lib/transform";
 
-const { annotations, repos } = schema;
+const { alertSettings, annotations, repos } = schema;
 
 /**
  * Notes are written through server actions, which POST to the page URL —
@@ -34,4 +35,20 @@ export async function deleteNote(formData: FormData) {
   await db.delete(annotations).where(and(eq(annotations.id, id), eq(annotations.repoId, repo.id)));
   revalidatePath(`/repo/${fullName}`);
   revalidatePath("/");
+}
+
+/** Save (or clear) a repo's alert overrides. Blank fields fall back to the global ALERT_* settings. */
+export async function saveAlertSettings(formData: FormData) {
+  const fullName = String(formData.get("repo") ?? "");
+  const db = getDb();
+  const [repo] = await db.select({ id: repos.id }).from(repos).where(eq(repos.fullName, fullName)).limit(1);
+  if (!repo) return;
+  const override = formData.get("reset") ? null : parseAlertOverride((k) => (formData.get(k) as string | null) ?? null);
+  if (!override) await db.delete(alertSettings).where(eq(alertSettings.repoId, repo.id));
+  else
+    await db
+      .insert(alertSettings)
+      .values({ repoId: repo.id, ...override, updatedAt: new Date() })
+      .onConflictDoUpdate({ target: alertSettings.repoId, set: { ...override, updatedAt: new Date() } });
+  revalidatePath(`/repo/${fullName}`);
 }

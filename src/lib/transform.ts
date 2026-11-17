@@ -564,3 +564,33 @@ export function codeHistory(snapshots: { repoId: number; date: string; linesOfCo
   }
   return out;
 }
+
+// --- Per-repo alert settings (M4a) ----------------------------------------------------------------
+
+/**
+ * Read the repo alert-settings form. Blank number fields mean "use the global default" (null);
+ * out-of-range values are clamped. Returns null when nothing differs from the defaults, so the
+ * override row can be removed.
+ */
+export function parseAlertOverride(get: (key: string) => string | null) {
+  const int = (k: string, min: number, max: number) => {
+    const v = get(k)?.trim();
+    if (!v || Number.isNaN(Number(v))) return null;
+    return Math.min(max, Math.max(min, Math.round(Number(v))));
+  };
+  const factor = (() => {
+    const v = get("spikeFactor")?.trim();
+    if (!v || Number.isNaN(Number(v))) return null;
+    return Math.min(100, Math.max(1.1, Math.round(Number(v) * 10) / 10));
+  })();
+  const o = {
+    muted: get("muted") === "on",
+    milestones: get("milestones") === "on",
+    spikeFactor: factor,
+    minViews: int("minViews", 0, 1_000_000),
+    minClones: int("minClones", 0, 1_000_000),
+    starBurst: int("starBurst", 1, 100_000),
+  };
+  const isDefault = !o.muted && o.milestones && o.spikeFactor === null && o.minViews === null && o.minClones === null && o.starBurst === null;
+  return isDefault ? null : o;
+}

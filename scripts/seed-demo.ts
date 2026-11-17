@@ -6,7 +6,7 @@ import { eq, inArray, sql } from "drizzle-orm";
 import { getDb, schema } from "../src/lib/db";
 import { daysAgo, isoDay } from "../src/lib/utils";
 
-const { alerts, annotations, contributionDays, contributionRepos, contributionYears, profileSnapshots, issues, workflowRuns, repoHealth, repoFrameworks, codeSnapshots, deployments, packageVersions, repos, repoLanguages, repoLoc, repoSnapshots, trafficDaily, trafficWindows, referrers, popularPaths, releaseAssets, starEvents, forkEvents, syncRuns } =
+const { alerts, annotations, contributionDays, contributionRepos, contributionYears, profileSnapshots, issues, workflowRuns, repoHealth, repoFrameworks, codeSnapshots, deployments, packageVersions, releases, alertSettings, repos, repoLanguages, repoLoc, repoSnapshots, trafficDaily, trafficWindows, referrers, popularPaths, releaseAssets, starEvents, forkEvents, syncRuns } =
   schema;
 
 // Deterministic PRNG so screenshots are stable
@@ -37,7 +37,7 @@ const DAYS = 120;
 async function main() {
   const db = getDb();
   const ids = DEMO.map((_, i) => 900001 + i);
-  for (const t of [alerts, annotations, issues, workflowRuns, repoHealth, repoFrameworks, codeSnapshots, deployments, repoLanguages, repoLoc, trafficDaily, trafficWindows, repoSnapshots, referrers, popularPaths, releaseAssets, starEvents, forkEvents]) {
+  for (const t of [alerts, annotations, issues, workflowRuns, repoHealth, repoFrameworks, codeSnapshots, deployments, releases, alertSettings, repoLanguages, repoLoc, trafficDaily, trafficWindows, repoSnapshots, referrers, popularPaths, releaseAssets, starEvents, forkEvents]) {
     await db.delete(t).where(inArray(t.repoId, ids));
   }
   await db.delete(repos).where(inArray(repos.id, ids));
@@ -162,6 +162,30 @@ async function main() {
     }
   }
 
+  // Releases (chart markers): a few per repo, one inside the last month for the busiest ones
+  const RELEASES: [number, string, number, boolean][] = [
+    [0, "v1.0.0", 110, false], [0, "v1.1.0", 52, false], [0, "v1.2.0-beta.1", 30, true], [0, "v1.2.0", 18, false],
+    [1, "v2.0.0", 95, false], [1, "v2.1.0", 9, false],
+    [2, "v0.3.0", 70, false], [2, "v0.4.0", 25, false],
+    [4, "v0.1.0", 40, false],
+  ];
+  await db.insert(releases).values(
+    RELEASES.map(([i, tag, back, prerelease], k) => ({
+      repoId: ids[i],
+      releaseId: 70_000 + k,
+      tag,
+      name: prerelease ? null : `${DEMO[i].name} ${tag}`,
+      publishedAt: new Date(daysAgo(back) + "T16:00:00Z"),
+      prerelease,
+      url: `https://github.com/demo/${DEMO[i].name}/releases/tag/${tag}`,
+    })),
+  );
+  // Custom alert settings: the busy repo needs a higher bar; dotfiles is muted
+  await db.insert(alertSettings).values([
+    { repoId: ids[0], muted: false, minViews: 150, spikeFactor: 4, milestones: true },
+    { repoId: ids[5], muted: true, milestones: true },
+  ]);
+
   // Languages + lines of code; dotfiles gets cloned by "CI" every day so it shows the likely-automated hint
   for (const [i, c] of CODE.entries()) {
     await db.insert(repoLanguages).values(Object.entries(c.languages).map(([language, bytes]) => ({ repoId: ids[i], language, bytes })));
@@ -184,7 +208,7 @@ async function main() {
   const top = ids[0];
   await db.insert(annotations).values([
     { repoId: top, date: daysAgo(31), label: "Posted on Hacker News" },
-    { repoId: top, date: daysAgo(12), label: "v1.2.0 released" },
+    { repoId: top, date: daysAgo(12), label: "Added to an awesome-list" },
     { repoId: ids[1], date: daysAgo(20), label: "Blog post" },
   ]);
   await db.insert(alerts).values([

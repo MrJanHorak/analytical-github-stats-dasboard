@@ -409,3 +409,35 @@ export const packageVersions = pgTable(
   },
   (t) => [primaryKey({ columns: [t.ecosystem, t.package] })],
 );
+
+// --- Releases & per-repo alert settings (M4a) ----------------------------------------------------
+
+/** Published GitHub releases (drafts left out) — chart markers and a releases list. Replaced each sync. */
+export const releases = pgTable(
+  "releases",
+  {
+    repoId: repoId(),
+    releaseId: bigint("release_id", { mode: "number" }).notNull(),
+    tag: text("tag").notNull(),
+    name: text("name"),
+    publishedAt: timestamp("published_at", { withTimezone: true }).notNull(),
+    prerelease: boolean("prerelease").notNull(),
+    url: text("url"),
+  },
+  (t) => [primaryKey({ columns: [t.repoId, t.releaseId] }), index("releases_published_idx").on(t.publishedAt)],
+);
+
+/**
+ * Per-repo alert overrides. Null fields fall back to the global ALERT_* settings; `muted` turns all
+ * of a repo's alerts off, `milestones` just the star-milestone ones.
+ */
+export const alertSettings = pgTable("alert_settings", {
+  repoId: repoId().primaryKey(),
+  muted: boolean("muted").notNull().default(false),
+  spikeFactor: real("spike_factor"),
+  minViews: integer("min_views"),
+  minClones: integer("min_clones"),
+  starBurst: integer("star_burst"),
+  milestones: boolean("milestones").notNull().default(true),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});

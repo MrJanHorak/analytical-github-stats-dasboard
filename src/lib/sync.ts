@@ -30,6 +30,7 @@ const {
   referrers,
   popularPaths,
   releaseAssets,
+  releases: releasesTable,
   starEvents,
   forkEvents,
   syncRuns,
@@ -392,6 +393,20 @@ async function syncRepoTraffic(repoId: number, owner: string, name: string, toda
   }
 
   const releases = await fetchReleases(owner, name);
+  // Published releases → chart markers (drafts have no date; deleted releases disappear)
+  const published = releases
+    .filter((rel) => !rel.draft && rel.published_at)
+    .map((rel) => ({
+      repoId,
+      releaseId: rel.id,
+      tag: rel.tag_name,
+      name: rel.name || null,
+      publishedAt: new Date(rel.published_at!),
+      prerelease: rel.prerelease,
+      url: rel.html_url,
+    }));
+  await db.delete(releasesTable).where(eq(releasesTable.repoId, repoId));
+  if (published.length) await db.insert(releasesTable).values(published).onConflictDoNothing();
   const assets = releases.flatMap((rel) =>
     rel.assets.map((a) => ({
       repoId,

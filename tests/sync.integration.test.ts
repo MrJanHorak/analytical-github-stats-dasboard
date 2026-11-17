@@ -133,7 +133,17 @@ beforeEach(() => {
     paths: [{ path: "/jan/alpha", title: "alpha", count: 30, uniques: 9 }],
   } as never);
   m.fetchReleases.mockResolvedValue([
-    { tag_name: "v1.0.0", assets: [{ id: 99, name: "alpha.zip", download_count: 42 }] },
+    {
+      id: 7001,
+      tag_name: "v1.0.0",
+      name: "First release",
+      draft: false,
+      prerelease: false,
+      published_at: ts(4),
+      html_url: "https://github.com/jan/alpha/releases/tag/v1.0.0",
+      assets: [{ id: 99, name: "alpha.zip", download_count: 42 }],
+    },
+    { id: 7002, tag_name: "v2.0.0", name: null, draft: true, prerelease: false, published_at: null, html_url: "", assets: [] },
   ] as never);
   m.fetchStargazers.mockResolvedValue([
     { login: "old-fan", starredAt: "2024-06-01T12:00:00Z" },
@@ -329,6 +339,13 @@ describe("dashboard queries", () => {
     expect(d.recentStargazers.map((s) => s.login)).toEqual(["new-fan", "old-fan"]);
     expect(d.recentForks[0].fullName).toBe("someone/alpha");
     expect(d.assets[0]).toMatchObject({ assetName: "alpha.zip", downloads: 42 });
+    // Published releases are stored (drafts skipped) and marked on the chart
+    expect(d.releases).toEqual([
+      { tag: "v1.0.0", name: "First release", publishedAt: new Date(ts(4)), prerelease: false, url: "https://github.com/jan/alpha/releases/tag/v1.0.0" },
+    ]);
+    // "All" starts at the first stored traffic day (2 days ago), so the marker shows on a 30-day chart
+    expect(d.markers.some((m) => m.kind === "release")).toBe(false);
+    expect((await getRepoDetail("jan", "alpha", 30))!.markers).toContainEqual({ date: daysAgo(4), label: "🚀 v1.0.0", kind: "release" });
     expect(d.paths[0].path).toBe("/jan/alpha");
     expect(d.window14).toMatchObject({ viewUniques: 7 });
     expect(d.referrerTrend.series.map((s) => s.label)).toEqual(["github.com", "google.com"]);
