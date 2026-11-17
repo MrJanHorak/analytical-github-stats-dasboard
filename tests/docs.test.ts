@@ -33,7 +33,7 @@ describe("README stays in sync with the code", () => {
       }
     }
     // Set by the platform or the screenshot tooling, not by users of the app
-    for (const v of ["NODE_ENV", "BASE_URL", "CHROME_CHANNEL"]) used.delete(v);
+    for (const v of ["NODE_ENV", "BASE_URL", "CHROME_CHANNEL", "VERCEL_PROJECT_PRODUCTION_URL"]) used.delete(v);
     const example = read(".env.example");
     const missing = [...used].filter((v) => !example.includes(`${v}=`));
     expect(missing, "Add these to .env.example (and the README table)").toEqual([]);
