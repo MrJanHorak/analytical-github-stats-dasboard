@@ -39,14 +39,25 @@ export async function POST() {
     if (left < 30_000) break;
     // Claim it first so a double click doesn't start two syncs
     await getDb().update(installations).set({ lastSyncedAt: new Date() }).where(eq(installations.id, inst.id));
+    // A sync that got nothing (bad App credentials, no repo access…) shouldn't lock the button for 15 minutes
+    const fail = async (error: string) => {
+      await getDb().update(installations).set({ lastSyncedAt: inst.lastSyncedAt }).where(eq(installations.id, inst.id));
+      console.error(`sync/me failed for ${inst.accountLogin}: ${error}`);
+      return NextResponse.json({ error }, { status: 500 });
+    };
     let r;
     try {
       r = await syncInstallation(inst.id, { timeBudgetMs: left - 20_000 });
     } catch (e) {
-      // A failed sync (e.g. bad App credentials) shouldn't lock the button for 15 minutes
-      await getDb().update(installations).set({ lastSyncedAt: inst.lastSyncedAt }).where(eq(installations.id, inst.id));
-      console.error("sync/me failed", e);
-      return NextResponse.json({ error: e instanceof Error ? e.message : String(e) }, { status: 500 });
+      return fail(e instanceof Error ? e.message : String(e));
+    }
+    if (r.errors.length) console.error(`sync/me: ${r.errors.length} error(s) for ${inst.accountLogin}`, r.errors.slice(0, 5));
+    if (r.reposSynced === 0) {
+      return fail(
+        r.errors.length
+          ? `Sync failed: ${r.errors[0].error}`
+          : "The GitHub App can't see any repositories. On GitHub, open the App's installation settings and give it access to your repos.",
+      );
     }
     results.push({ account: inst.accountLogin, reposSynced: r.reposSynced, errors: r.errors.length });
   }
