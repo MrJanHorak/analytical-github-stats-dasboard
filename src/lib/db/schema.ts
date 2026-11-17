@@ -18,6 +18,8 @@ const repoId = () => bigint("repo_id", { mode: "number" }).notNull();
 export const repos = pgTable("repos", {
   id: bigint("id", { mode: "number" }).primaryKey(), // GitHub repo id
   owner: text("owner").notNull(),
+  /** GitHub App installation that syncs this repo (App mode); null when synced with a personal token */
+  installationId: bigint("installation_id", { mode: "number" }),
   name: text("name").notNull(),
   fullName: text("full_name").notNull().unique(),
   description: text("description"),
@@ -232,6 +234,8 @@ export const syncRuns = pgTable("sync_runs", {
   finishedAt: timestamp("finished_at", { withTimezone: true }),
   reposSynced: integer("repos_synced").notNull().default(0),
   error: text("error"),
+  /** Installation this run synced (App mode); null for a personal-token sync */
+  installationId: bigint("installation_id", { mode: "number" }),
 });
 
 // --- Your own activity (the token's user), for /me ----------------------------------------------
@@ -441,3 +445,49 @@ export const alertSettings = pgTable("alert_settings", {
   milestones: boolean("milestones").notNull().default(true),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+// --- Multi-user (M4b): GitHub App sign-in ---------------------------------------------------------
+
+/** People who signed in with GitHub (App mode). id = GitHub user id. */
+export const users = pgTable("users", {
+  id: bigint("id", { mode: "number" }).primaryKey(),
+  login: text("login").notNull(),
+  name: text("name"),
+  avatarUrl: text("avatar_url"),
+  email: text("email"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  lastLoginAt: timestamp("last_login_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * Each user's GitHub refresh token, encrypted with AUTH_SECRET (AES-256-GCM). The sync swaps it for
+ * a fresh 8-hour access token to read that user's contributions; GitHub rotates it every time.
+ */
+export const userTokens = pgTable("user_tokens", {
+  userId: bigint("user_id", { mode: "number" }).primaryKey(),
+  refreshTokenEnc: text("refresh_token_enc").notNull(),
+  refreshExpiresAt: timestamp("refresh_expires_at", { withTimezone: true }),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** Installations of the GitHub App (one per account it's installed on). */
+export const installations = pgTable("installations", {
+  id: bigint("id", { mode: "number" }).primaryKey(),
+  accountLogin: text("account_login").notNull(),
+  accountId: bigint("account_id", { mode: "number" }).notNull(),
+  accountType: text("account_type").notNull(), // User | Organization
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  /** Set when the App was uninstalled; the installation is no longer synced */
+  removedAt: timestamp("removed_at", { withTimezone: true }),
+  lastSyncedAt: timestamp("last_synced_at", { withTimezone: true }),
+});
+
+/** Which installations a signed-in user can see (their own account, plus orgs they installed on). */
+export const userInstallations = pgTable(
+  "user_installations",
+  {
+    userId: bigint("user_id", { mode: "number" }).notNull(),
+    installationId: bigint("installation_id", { mode: "number" }).notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.userId, t.installationId] })],
+);

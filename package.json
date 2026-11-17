@@ -11,6 +11,7 @@
     "db:generate": "drizzle-kit generate",
     "db:push": "drizzle-kit push",
     "sync": "tsx scripts/sync.ts",
+    "sync:all": "tsx scripts/sync-all.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "db:migrate": "drizzle-kit migrate",
@@ -19,8 +20,10 @@
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.2.1",
+    "@octokit/auth-app": "^8.3.1",
     "@octokit/rest": "^22.0.1",
     "drizzle-orm": "^0.45.4",
+    "jose": "^6.2.17",
     "next": "^15.5.29",
     "postgres": "^4.1.1",
     "react": "^19.3.1",

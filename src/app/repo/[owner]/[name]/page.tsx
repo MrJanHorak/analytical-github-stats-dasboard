@@ -14,6 +14,7 @@ import { addNote, deleteNote, saveAlertSettings } from "./actions";
 import { AlertSettingsForm } from "@/components/AlertSettingsForm";
 import { getCodeFrequency, getCommitActivity, getLanguages } from "@/lib/github-cached";
 import { getRepoDetail } from "@/lib/queries";
+import { getScope } from "@/lib/scope";
 import { monthlyCodeFrequency } from "@/lib/transform";
 import { fmt, isoDay, parseRange, rangeParam, rangeText } from "@/lib/utils";
 
@@ -30,15 +31,16 @@ export default async function RepoPage({ params, searchParams }: Props) {
   if (!isDbConfigured()) return <SetupNotice />;
   const { owner, name } = await params;
   const range = parseRange((await searchParams).range);
-  const data = await getRepoDetail(owner, name, range);
+  // Unknown repos and other users' repos both 404 (no hint that a private repo exists)
+  const data = await getRepoDetail(owner, name, range, await getScope());
   if (!data) notFound();
 
   // Live (not stored) extras, cached; failures shouldn't break the page.
   // Languages are stored by the sync; until it has run for this repo, fall back to a live fetch.
   const [liveLanguages, commits, codeFrequency] = await Promise.all([
-    data.languages.length ? Promise.resolve(null) : getLanguages(owner, name),
-    getCommitActivity(owner, name),
-    getCodeFrequency(owner, name),
+    data.languages.length ? Promise.resolve(null) : getLanguages(owner, name, data.repo.installationId),
+    getCommitActivity(owner, name, data.repo.installationId),
+    getCodeFrequency(owner, name, data.repo.installationId),
   ]);
   const codeMonths = monthlyCodeFrequency(codeFrequency);
   const languages = liveLanguages

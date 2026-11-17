@@ -19,6 +19,13 @@ export type AlertConfig = {
   baselineDays: number;
   webhookUrl?: string;
   appUrl?: string;
+  /**
+   * Sign-in (App) mode: only alerts for repos owned by this GitHub account go to the webhook, so
+   * other users' (possibly private) repos never reach your channel. Unset = no webhook in App mode.
+   */
+  webhookOwner?: string;
+  /** Set when the app runs in sign-in (App) mode */
+  appMode?: boolean;
 };
 
 const num = (v: string | undefined, d: number) => (v !== undefined && v !== "" && !Number.isNaN(Number(v)) ? Number(v) : d);
@@ -33,6 +40,8 @@ export function alertConfigFromEnv(env: NodeJS.ProcessEnv = process.env): AlertC
     baselineDays: 7,
     webhookUrl: env.ALERT_WEBHOOK_URL || undefined,
     appUrl: env.APP_URL?.replace(/\/$/, "") || undefined,
+    webhookOwner: env.ALERT_WEBHOOK_OWNER || undefined,
+    appMode: !!(env.GITHUB_APP_ID && env.GITHUB_APP_PRIVATE_KEY && env.GITHUB_APP_CLIENT_ID && env.GITHUB_APP_CLIENT_SECRET && env.AUTH_SECRET),
   };
 }
 
@@ -169,12 +178,18 @@ export async function evaluateAlerts(config = alertConfigFromEnv()) {
 /** Send not-yet-notified alerts to a Slack- or Discord-compatible webhook. */
 export async function notifyAlerts(config = alertConfigFromEnv(), fetchImpl: typeof fetch = fetch) {
   if (!config.webhookUrl) return 0;
+  if (config.appMode && !config.webhookOwner) return 0;
   const db = getDb();
   const pending = await db
     .select({ alert: alerts, fullName: repos.fullName })
     .from(alerts)
     .innerJoin(repos, eq(repos.id, alerts.repoId))
-    .where(isNull(alerts.notifiedAt))
+    .where(
+      and(
+        isNull(alerts.notifiedAt),
+        config.appMode && config.webhookOwner ? sql`lower(${repos.owner}) = ${config.webhookOwner.toLowerCase()}` : undefined,
+      ),
+    )
     .orderBy(desc(alerts.date))
     .limit(20);
   if (!pending.length) return 0;

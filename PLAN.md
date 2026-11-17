@@ -54,7 +54,12 @@ Not available from GitHub: visitor geography, devices, user agents (so no way to
 
 - A **fine-grained personal access token** in `GITHUB_TOKEN`, scoped to *All repositories* with **Administration: Read-only** (required for traffic), **Contents: Read-only** (release download counts and line counting), **Issues** + **Pull requests: Read-only** (issue/PR stats for private repos) and **Metadata: Read-only**. Optional: **Actions: Read-only** (CI stats), **Deployments: Read-only** (deploy frequency) and **Dependabot alerts: Read-only** (security alerts). A classic token with `repo` scope also works.
 - Dashboard, CSV export and note-editing server actions are protected by `DASHBOARD_PASSWORD` (HTTP basic auth middleware). Exceptions: `/api/cron/*` (own bearer secret) and `/api/badge/*` (public by design, public repos only).
-- **v2 (M4b):** a GitHub App + Auth.js sign-in so multiple users can track their own repos (tables already carry `owner`) — see the roadmap.
+- **Sign-in mode (M4b)**, on when `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET` and `AUTH_SECRET` are set:
+  - **Sign-in:** a small hand-written GitHub OAuth flow rather than Auth.js, whose v5 is still beta. `/api/auth/signin` sets a CSRF state cookie and sends the user to GitHub. `/api/auth/callback/github` swaps the code for user tokens, stores the user and their **encrypted** refresh token (AES-256-GCM, key from `AUTH_SECRET`), and links the installations GitHub lists for that user. It then sets a signed session cookie (HS256 JWT via `jose`, 30 days, which middleware can verify without a DB).
+  - **Access:** middleware lets `/`, `/privacy`, `/installed`, `/api/auth/*`, `/api/badge/*` and `/api/cron/*` through; everything else needs a session. `getScope()` resolves the session to the repos of the user's (non-removed) installations, and every query takes that scope. Server actions and the CSV export check it too, so other users' repos 404.
+  - **Install flow:** the GitHub App's Setup URL is `/installed`, which runs a quick re-sign-in to refresh installation links and then lands on `/?installed=1`. That page starts the first sync via `POST /api/sync/me` (throttled to once per 15 minutes per installation, about a 4-minute budget on Vercel).
+  - **Webhook:** only alerts for repos owned by `ALERT_WEBHOOK_OWNER` are posted; none if it's unset.
+  - **Single-user mode** (personal token and basic auth) is unchanged when the App variables are absent.
 
 ## 5. Data model
 
@@ -101,11 +106,25 @@ package_versions (ecosystem, package) PK — latest, checked_at   [npm / PyPI la
 releases         (repo_id, release_id) PK — tag, name, published_at, prerelease, url   [published only; replaced each sync]
 alert_settings   (repo_id) PK — muted, milestones, spike_factor, min_views, min_clones, star_burst, updated_at
                  [per-repo overrides; null = global ALERT_* default]
+
+users            (id PK = GitHub user id) — login, name, avatar_url, email, created_at, last_login_at
+user_tokens      (user_id) PK — refresh_token_enc (AES-256-GCM), refresh_expires_at, updated_at   [rotated each refresh]
+installations    (id PK = installation id) — account_login, account_id, account_type, created_at, removed_at, last_synced_at
+user_installations (user_id, installation_id) PK   [who can see which installation; refreshed on every sign-in]
+repos.installation_id, sync_runs.installation_id   [which installation synced it; null = personal-token sync]
 ```
 
 All writes are upserts, so re-running the sync is safe and the partial "today" row simply gets corrected next run.
 
 ## 6. Sync job (`/api/cron/sync` daily, or `npm run sync`)
+
+**Sign-in mode** (`npm run sync:all`, run by the GitHub Actions workflow; `src/lib/sync-app.ts`):
+1. List the App's installations (App JWT), upsert them, and mark any no longer listed as removed.
+2. For each installation, run the steps below inside its GitHub context (`withGitHub`, an AsyncLocalStorage that `getOctokit()`/`fetchTarball` read). Repos come from `GET /installation/repositories`, using installation tokens that refresh themselves.
+3. Contributions use the owner's own user token, refreshed from the stored refresh token, which GitHub rotates. This only applies to personal accounts whose owner has signed in; it's skipped otherwise.
+4. Run alerts once at the end.
+
+**Single-user mode** is steps 1–10 below with the personal token.
 
 1. Cron route is authenticated by `Authorization: Bearer $CRON_SECRET` (Vercel sends this automatically).
 2. List all owned repos (paginated) → upsert `repos` + today's `repo_snapshots`.
@@ -152,5 +171,5 @@ Repo detail also gets a **code growth** chart: lines added/deleted per month fro
 - **M3.8 ✅** frameworks & tools detected from manifests and config files during the tarball pass (npm, PyPI, RubyGems, Composer, Go, Cargo, Maven/Gradle + config files), overview panel by category, table filter, repo tags. Migration forces one recount of every repo.
 - **M3.9 ✅** code health: test share and TODOs from the tarball pass, daily code snapshots → lines over time, frameworks a major behind their latest npm/PyPI release; deployment frequency and success rate from the Deployments API. Migration forces one more recount.
 - **M4a ✅** release-date markers from GitHub releases (repo + overview charts, Notes & alerts list); per-repo alert thresholds, mute and milestone toggle.
-- **M4b:** multi-user via a **GitHub App** (not an OAuth App — its `repo` scope would grant write access to every private repo) + Auth.js "Sign in with GitHub". Users install the App on chosen repos (Administration, Contents, Metadata: read); the cron uses installation tokens so syncs run with nobody logged in; every query scoped by owner; sync fanned out across installations.
+- **M4b ✅** multi-user via a **GitHub App** (not an OAuth App — its `repo` scope would grant write access to every private repo) + Auth.js "Sign in with GitHub". Users install the App on chosen repos (read-only permissions); syncs run from GitHub Actions per installation with installation tokens, contributions with each user's refreshed token; every query, server action and export is scoped to the signed-in user's installations; landing, account (sync now, delete my data) and privacy pages; webhook restricted to `ALERT_WEBHOOK_OWNER`. Single-user mode unchanged when the App variables are absent.
 - **M4c:** email alerts.
