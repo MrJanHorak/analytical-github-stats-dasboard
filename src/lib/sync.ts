@@ -13,6 +13,7 @@ import {
 } from "./github";
 import { countTarball } from "./loc";
 import { activityMarkers, syncRepoActivity } from "./sync-activity";
+import { type GitHubContext, withGitHub } from "./github-context";
 import { syncContributions } from "./sync-contributions";
 import { syncPackageVersions } from "./sync-packages";
 import { mergeTraffic } from "./transform";
@@ -68,6 +69,16 @@ export type SyncOptions = {
    * Leftover history work is picked up automatically on the next run.
    */
   timeBudgetMs?: number;
+  /** App mode: the installation being synced (runSync is then called inside its GitHub context). */
+  installationId?: number;
+  /**
+   * Whose contributions to sync. Default: the current GitHub identity (personal-token mode).
+   * App mode passes the installation owner's user context, or null to skip (no user token yet,
+   * or an organization installation).
+   */
+  contributions?: GitHubContext | null;
+  /** Skip alert evaluation / webhook (App mode runs them once after all installations). */
+  skipAlerts?: boolean;
 };
 
 /** Repos bigger than this (GitHub's size, in KB) are not downloaded for line counting. */
@@ -81,7 +92,7 @@ export async function runSync(opts: SyncOptions = {}): Promise<SyncResult> {
   const started = Date.now();
   const outOfTime = () => opts.timeBudgetMs !== undefined && Date.now() - started > opts.timeBudgetMs;
   const today = isoDay();
-  const [run] = await db.insert(syncRuns).values({}).returning({ id: syncRuns.id });
+  const [run] = await db.insert(syncRuns).values({ installationId: opts.installationId ?? null }).returning({ id: syncRuns.id });
 
   const errors: SyncResult["errors"] = [];
   let reposSynced = 0;
@@ -100,7 +111,7 @@ export async function runSync(opts: SyncOptions = {}): Promise<SyncResult> {
       activityMarkers(),
     ]);
 
-    for (const r of owned) await upsertRepoAndSnapshot(r, today);
+    for (const r of owned) await upsertRepoAndSnapshot(r, today, opts.installationId ?? null);
 
     // Phase 1 — traffic: time-critical, GitHub discards it after 14 days.
     // Archived repos are read-only: GitHub returns 403 for their traffic endpoints.
@@ -119,7 +130,10 @@ export async function runSync(opts: SyncOptions = {}): Promise<SyncResult> {
 
     // Phase 1b — your own contributions + followers (cheap after the one-time backfill).
     try {
-      contributionYearsPending = (await syncContributions({ outOfTime })).yearsPending;
+      if (opts.contributions !== null) {
+        const run = () => syncContributions({ outOfTime });
+        contributionYearsPending = (await (opts.contributions ? withGitHub(opts.contributions, run) : run())).yearsPending;
+      }
     } catch (e) {
       errors.push({ repo: "contributions", error: errMsg(e) });
     }
@@ -188,11 +202,13 @@ export async function runSync(opts: SyncOptions = {}): Promise<SyncResult> {
 
   // Alerts: judge yesterday against the stored history, then notify (both best-effort)
   let alertsCreated = 0;
-  try {
-    alertsCreated = (await evaluateAlerts()).length;
-    await notifyAlerts();
-  } catch (e) {
-    errors.push({ repo: "alerts", error: errMsg(e) });
+  if (!opts.skipAlerts) {
+    try {
+      alertsCreated = (await evaluateAlerts()).length;
+      await notifyAlerts();
+    } catch (e) {
+      errors.push({ repo: "alerts", error: errMsg(e) });
+    }
   }
 
   await db
@@ -280,13 +296,14 @@ async function countBy(table: typeof starEvents | typeof forkEvents) {
   return new Map(rows.map((r) => [r.repoId, r.n]));
 }
 
-async function upsertRepoAndSnapshot(r: OwnedRepo, today: string) {
+async function upsertRepoAndSnapshot(r: OwnedRepo, today: string, installationId: number | null) {
   const db = getDb();
   await db
     .insert(repos)
     .values({
       id: r.id,
       owner: r.owner.login,
+      installationId,
       name: r.name,
       fullName: r.full_name,
       description: r.description,
@@ -303,6 +320,7 @@ async function upsertRepoAndSnapshot(r: OwnedRepo, today: string) {
       target: repos.id,
       set: {
         owner: excluded("owner"),
+        installationId: excluded("installation_id"),
         name: excluded("name"),
         fullName: excluded("full_name"),
         description: excluded("description"),

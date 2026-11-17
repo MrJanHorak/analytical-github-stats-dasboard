@@ -112,6 +112,38 @@ Want to look around before connecting GitHub? Run `npm run seed:demo` to fill th
 
 **Time limits:** the cron route collects traffic for every repo first, because GitHub deletes it after 14 days. It then refreshes star/fork history until its time budget (`SYNC_TIME_BUDGET_MS`, default 45s) runs out, and anything left over resumes on the next run. With very many repos you can also raise `maxDuration` (Vercel Pro) or use the included GitHub Actions workflow (`.github/workflows/sync.yml`). For that workflow, add `GH_STATS_TOKEN` and `DATABASE_URL` as repository secrets.
 
+## Sign in with GitHub (multi-user)
+
+By default the app is single-user: one personal token and an optional password. Set the five `GITHUB_APP_*` / `AUTH_SECRET` variables and it becomes a multi-user site:
+
+1. A visitor signs in with GitHub and installs your **GitHub App** on the repos they choose. It asks for read-only permissions: Administration (GitHub requires it for traffic), Contents, Metadata, Issues, Pull requests, Actions, Deployments, Dependabot alerts, plus Email addresses for future email alerts.
+2. They see only the repos of installations they can access: their own account, plus organizations they installed it on. Other people's repos 404, and notes and alert settings can only be changed on your own repos.
+3. **Syncing runs on GitHub Actions** (`.github/workflows/sync.yml` → `npm run sync:all`). Each installation is synced with its own token (5,000 requests/hour each, no function time limit), and each user's contributions with their own GitHub token, which is stored encrypted and renewed on every sync. A new user doesn't have to wait for the nightly run: the dashboard starts a first sync (`/api/sync/me`, up to ~4 minutes on Vercel), and the nightly run finishes the rest.
+4. Users can delete everything stored about their account from **Account → Delete my data**, after uninstalling the App. `/privacy` explains what's stored.
+
+<table>
+<tr>
+<td width="50%"><b>Landing page</b> (signed out)<br><img src="docs/landing.png" alt="Landing page"></td>
+<td width="50%"><b>Account</b> — connected accounts, sync now, delete my data<br><img src="docs/account.png" alt="Account page"></td>
+</tr>
+</table>
+
+These two are taken in sign-in mode by hand; `npm run screenshots` covers the single-user views.
+
+**Set up the GitHub App** (github.com → Settings → Developer settings → GitHub Apps → New):
+
+| Setting | Value |
+|---|---|
+| Redirect URI | `https://<your-app>/api/auth/callback/github` (and `http://localhost:3000/api/auth/callback/github` for local dev) |
+| Expire user authorization tokens | ✅ |
+| Request user authorization (OAuth) during installation | ☐ **off**: people sign in on the site first |
+| Setup URL | `https://<your-app>/installed`, with **Redirect on update** ✅ |
+| Webhook | off |
+| Permissions | the read-only ones listed above |
+| Where can it be installed | **Any account** |
+
+Then add the App ID, client ID, a client secret, a private key and `AUTH_SECRET` to Vercel. Add them to the repo's **Actions secrets** too, as `GH_APP_ID`, `GH_APP_PRIVATE_KEY`, `GH_APP_CLIENT_ID`, `GH_APP_CLIENT_SECRET`, `AUTH_SECRET` and `DATABASE_URL`, because GitHub doesn't allow secret names starting with `GITHUB_`. `GITHUB_TOKEN`, `DASHBOARD_PASSWORD` and `CRON_SECRET` aren't used in this mode. Sign-in replaces the password, and the Vercel cron route does nothing. Your existing data carries over: repos are keyed by GitHub id, so they attach to your installation on the first `sync:all`.
+
 ## Alerts
 
 After each sync these are recorded for **yesterday**:
@@ -129,7 +161,7 @@ After each sync these are recorded for **yesterday**:
 
 A repo needs a week of stored history before spikes are judged, so a fresh install doesn't flag everything. Alerts appear on the overview, in each repo's *Notes & alerts* list, and as amber markers on the charts. Each alert is recorded only once, even if the sync runs again.
 
-**Slack / Discord:** create an incoming webhook ([Slack](https://api.slack.com/messaging/webhooks), [Discord](https://support.discord.com/hc/en-us/articles/228383668)) and set `ALERT_WEBHOOK_URL`. Set `APP_URL` too if you want each message to link back to the repo page.
+**Slack / Discord:** in sign-in mode only alerts for repos owned by `ALERT_WEBHOOK_OWNER` (your login) are posted, so other users' (possibly private) repo names never reach your channel. Everyone still sees their own alerts in the app. Create an incoming webhook ([Slack](https://api.slack.com/messaging/webhooks), [Discord](https://support.discord.com/hc/en-us/articles/228383668)) and set `ALERT_WEBHOOK_URL`. Set `APP_URL` too if you want each message to link back to the repo page.
 
 ## Notes
 
@@ -192,6 +224,12 @@ All variables are listed with comments in [`.env.example`](./.env.example).
 | `DB_DRIVER` | | `neon` or `pg`. Auto-detected: `*.neon.tech` uses Neon's HTTP driver, anything else uses TCP |
 | `DB_POOL_MAX` | | Max TCP connections for non-Neon Postgres (default `5`) |
 | `SYNC_TIME_BUDGET_MS` | | Cron sync time budget before deferring history backfills (default `45000`) |
+| `GITHUB_APP_ID` | sign-in mode | GitHub App ID — with the four below, switches on *Sign in with GitHub* |
+| `GITHUB_APP_CLIENT_ID` | sign-in mode | GitHub App client ID |
+| `GITHUB_APP_CLIENT_SECRET` | sign-in mode | GitHub App client secret |
+| `GITHUB_APP_PRIVATE_KEY` | sign-in mode | GitHub App private key (the `.pem` contents) |
+| `AUTH_SECRET` | sign-in mode | Signs session cookies and encrypts users' GitHub tokens |
+| `ALERT_WEBHOOK_OWNER` | | Sign-in mode: only this account's repo alerts go to the webhook |
 
 ## Scripts
 
@@ -199,6 +237,7 @@ All variables are listed with comments in [`.env.example`](./.env.example).
 |---|---|
 | `npm run dev` / `npm run build` / `npm start` | Next.js dev server / production build / production server |
 | `npm run sync` | Run the collector once (no time limit) |
+| `npm run sync:all` | Sign-in mode: sync every GitHub App installation (what the GitHub Actions workflow runs) |
 | `npm run db:migrate` | Apply migrations in `drizzle/` |
 | `npm run db:generate` | Create a new migration after changing `src/lib/db/schema.ts` |
 | `npm run db:push` | Push the schema directly without migrations (prototyping only) |
@@ -212,12 +251,19 @@ All variables are listed with comments in [`.env.example`](./.env.example).
 
 | Route | Auth | Purpose |
 |---|---|---|
-| `/` | dashboard password | Overview (`?range=7\|14\|30\|90\|365\|all`) |
+| `/` | dashboard password / signed in | Overview (`?range=7\|14\|30\|90\|365\|all`); the landing page when signed out in sign-in mode |
 | `/repo/:owner/:name` | dashboard password | Repo detail and notes |
 | `/me` | dashboard password | Your contributions, streaks and followers |
 | `/api/export` | dashboard password | CSV: `?kind=repos\|daily&range=…` |
 | `/api/cron/sync` | `Bearer CRON_SECRET` | Run the sync (Vercel Cron) |
 | `/api/badge/:owner/:name` | public (public repos only) | SVG badge |
+| `/api/auth/signin` | public | Sign-in mode: start *Sign in with GitHub* (`?next=/path`) |
+| `/api/auth/callback/github` | public | Sign-in mode: GitHub's redirect URI |
+| `/api/auth/signout` | public (POST) | Sign-in mode: sign out |
+| `/api/sync/me` | signed in (POST) | Sign-in mode: sync your installations now (at most every 15 min) |
+| `/installed` | public | Sign-in mode: the GitHub App's Setup URL |
+| `/account` | signed in | Sign-in mode: connected accounts, sync now, delete my data |
+| `/privacy` | public | Sign-in mode: what's stored |
 
 ## Development
 

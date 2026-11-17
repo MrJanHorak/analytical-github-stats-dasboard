@@ -11,7 +11,11 @@ import { Sparkline } from "@/components/Sparkline";
 import { StatCard } from "@/components/StatCard";
 import { LanguageBars } from "@/components/LanguageBars";
 import { isDbConfigured } from "@/lib/db";
+import { FirstSync, InstallPrompt, Landing } from "@/components/AppMode";
+import { isAppMode } from "@/lib/app-mode";
+import { installUrl } from "@/lib/github-cached";
 import { getOverview } from "@/lib/queries";
+import { getScope, getSession } from "@/lib/scope";
 import { topWithOther } from "@/lib/transform";
 import { fmt, parseRange, rangeParam, rangeText } from "@/lib/utils";
 
@@ -22,7 +26,21 @@ export default async function Overview({ searchParams }: { searchParams: Promise
   const params = await searchParams;
   const range = parseRange(params.range);
   const q = typeof params.q === "string" ? params.q : "";
-  const data = await getOverview(range);
+  const scope = await getScope();
+  if (isAppMode()) {
+    // Sign-in mode: landing page → install the App → first sync → dashboard
+    const session = await getSession();
+    if (!session)
+      return (
+        <Landing
+          error={typeof params.signin_error === "string" ? params.signin_error : undefined}
+          notice={params.deleted === "1" ? "Your data has been deleted. Thanks for trying it out!" : undefined}
+        />
+      );
+    if (!scope.installationIds?.length) return <InstallPrompt installUrl={await installUrl()} login={session.login} />;
+    if (!scope.repoIds?.length) return <FirstSync autoStart={params.installed === "1"} />;
+  }
+  const data = await getOverview(range, scope);
   if (!data.repos.length) return <SetupNotice />;
   const { totals, previous, code } = data;
   const rt = rangeText(range);

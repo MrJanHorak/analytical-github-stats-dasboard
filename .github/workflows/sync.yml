@@ -1,14 +1,22 @@
 name: Sync GitHub stats
 
+# Daily collection. Runs the multi-user App sync when the GitHub App secrets are set, otherwise the
+# single-user sync with a personal token. GitHub keeps traffic for 14 days, so daily is plenty.
+# Secret names can't start with GITHUB_, so the App settings are stored as GH_APP_ID, GH_APP_PRIVATE_KEY,
+# GH_APP_CLIENT_ID and GH_APP_CLIENT_SECRET (plus AUTH_SECRET and DATABASE_URL).
 on:
   schedule:
     - cron: "17 6 * * *"
   workflow_dispatch:
 
+concurrency:
+  group: sync
+  cancel-in-progress: false
+
 jobs:
   sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -16,8 +24,27 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm run sync
+      - name: Sync (GitHub App, all users)
+        if: ${{ env.HAS_APP == 'true' }}
+        run: npm run sync:all
+        env:
+          GITHUB_APP_ID: ${{ secrets.GH_APP_ID }}
+          GITHUB_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          GITHUB_APP_CLIENT_ID: ${{ secrets.GH_APP_CLIENT_ID }}
+          GITHUB_APP_CLIENT_SECRET: ${{ secrets.GH_APP_CLIENT_SECRET }}
+          AUTH_SECRET: ${{ secrets.AUTH_SECRET }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+          ALERT_WEBHOOK_OWNER: ${{ secrets.ALERT_WEBHOOK_OWNER }}
+          APP_URL: ${{ secrets.APP_URL }}
+      - name: Sync (personal token)
+        if: ${{ env.HAS_APP != 'true' }}
+        run: npm run sync
         env:
           # The default GITHUB_TOKEN can't read traffic for your other repos — use a PAT.
           GITHUB_TOKEN: ${{ secrets.GH_STATS_TOKEN }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+          APP_URL: ${{ secrets.APP_URL }}
+    env:
+      HAS_APP: ${{ secrets.GH_APP_ID != '' }}

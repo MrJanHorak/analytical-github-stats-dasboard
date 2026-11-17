@@ -6,14 +6,15 @@ import { SetupNotice } from "@/components/SetupNotice";
 import { StatCard } from "@/components/StatCard";
 import { isDbConfigured } from "@/lib/db";
 import { getMe } from "@/lib/queries";
-import { fmt } from "@/lib/utils";
+import { getScope } from "@/lib/scope";
+import { fmt, isoDay } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
 export const metadata: Metadata = { title: "Your activity · GitHub Repo Stats" };
 
 export default async function MePage() {
   if (!isDbConfigured()) return <SetupNotice />;
-  const me = await getMe();
+  const me = await getMe(isoDay(), await getScope());
   if (!me) {
     return (
       <div className="rounded-xl border border-zinc-800 p-6 text-sm text-zinc-400">

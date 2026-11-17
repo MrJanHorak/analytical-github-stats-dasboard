@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gte, inArray, lt, or, sql, type AnyColumn } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, lt, or, sql, type AnyColumn, type SQL } from "drizzle-orm";
 import { getDb, schema } from "./db";
 import { alertConfigFromEnv, effectiveConfig } from "./alerts";
 import { CATEGORIES } from "./frameworks";
@@ -70,13 +70,26 @@ const trafficSums = {
  * `prevSince` is only set when stored history fully covers the previous equal-length period,
  * so "% vs previous" never compares against a half-empty window.
  */
-async function windowFor(rangeDays: number, repoId?: number) {
+/**
+ * What a viewer may see. `null` fields mean everything (single-user mode). In sign-in (App) mode:
+ * the repos of the installations the signed-in user can access, and their own login.
+ */
+export type Scope = { repoIds: number[] | null; logins: string[] | null; installationIds: number[] | null };
+export const ALL_SCOPE: Scope = { repoIds: null, logins: null, installationIds: null };
+
+/** A filter on a repo_id column for the scope (undefined = no filter; empty scope = match nothing). */
+const repoFilter = (scope: Scope, col: AnyColumn) =>
+  scope.repoIds === null ? undefined : scope.repoIds.length ? inArray(col, scope.repoIds) : sql`false`;
+/** True when the scope may see this repo. */
+export const canSeeRepo = (scope: Scope, repoId: number) => scope.repoIds === null || scope.repoIds.includes(repoId);
+
+async function windowFor(rangeDays: number, filter?: SQL) {
   const until = isoDay();
   const db = getDb();
   const [row] = await db
     .select({ min: sql<string | null>`min(${trafficDaily.date})::text` })
     .from(trafficDaily)
-    .where(repoId ? eq(trafficDaily.repoId, repoId) : undefined);
+    .where(filter);
   const earliest = row?.min ?? until;
   if (rangeDays === 0) return { since: earliest, until, prevSince: null as string | null };
   const prev = daysAgo(rangeDays * 2 - 1);
@@ -84,11 +97,11 @@ async function windowFor(rangeDays: number, repoId?: number) {
 }
 
 /** GitHub's deduplicated 14-day totals from the most recent sync, per repo. */
-async function latestWindows(repoId?: number) {
+async function latestWindows(filter?: SQL) {
   return getDb()
     .selectDistinctOn([trafficWindows.repoId])
     .from(trafficWindows)
-    .where(repoId ? eq(trafficWindows.repoId, repoId) : undefined)
+    .where(filter)
     .orderBy(trafficWindows.repoId, desc(trafficWindows.date));
 }
 
@@ -98,10 +111,9 @@ export type RepoRow = Awaited<ReturnType<typeof getOverview>>["repos"][number];
  * Issues/PRs, Actions runs and health for the range: everything needed by the overview (all your
  * repos) or one repo's detail page. Only items touched in the range, plus what's open now, are read.
  */
-async function loadActivity(since: string, until: string, repoId?: number) {
+async function loadActivity(since: string, until: string, forRepo: (col: AnyColumn) => SQL | undefined) {
   const db = getDb();
   const sinceTs = new Date(since + "T00:00:00Z");
-  const forRepo = (col: AnyColumn) => (repoId === undefined ? undefined : eq(col, repoId));
   const [issueRows, runRows, healthRows] = await Promise.all([
     db
       .select({
@@ -221,49 +233,69 @@ const alertTotal = (h: typeof repoHealth.$inferSelect | undefined) =>
     ? null
     : (h.dependabotCritical ?? 0) + (h.dependabotHigh ?? 0) + (h.dependabotMedium ?? 0) + (h.dependabotLow ?? 0);
 
-export async function getOverview(rangeDays: number) {
+export async function getOverview(rangeDays: number, scope: Scope = ALL_SCOPE) {
   const db = getDb();
-  const { since, until, prevSince } = await windowFor(rangeDays);
+  const inScope = (col: AnyColumn) => repoFilter(scope, col);
+  const { since, until, prevSince } = await windowFor(rangeDays, inScope(trafficDaily.repoId));
 
   const [allRepos, traffic, perRepoDaily, daily, prev, latestSnaps, starsGained, forksGained, lastRun, langRows, locRows, fwRows] =
     await Promise.all([
-      db.select().from(repos),
-      db.select({ repoId: trafficDaily.repoId, ...trafficSums }).from(trafficDaily).where(gte(trafficDaily.date, since)).groupBy(trafficDaily.repoId),
+      db.select().from(repos).where(inScope(repos.id)),
+      db
+        .select({ repoId: trafficDaily.repoId, ...trafficSums })
+        .from(trafficDaily)
+        .where(and(gte(trafficDaily.date, since), inScope(trafficDaily.repoId)))
+        .groupBy(trafficDaily.repoId),
       db
         .select({ repoId: trafficDaily.repoId, date: trafficDaily.date, views: trafficDaily.views })
         .from(trafficDaily)
-        .where(gte(trafficDaily.date, since)),
+        .where(and(gte(trafficDaily.date, since), inScope(trafficDaily.repoId))),
       db
         .select({ date: trafficDaily.date, ...trafficSums })
         .from(trafficDaily)
-        .where(gte(trafficDaily.date, since))
+        .where(and(gte(trafficDaily.date, since), inScope(trafficDaily.repoId)))
         .groupBy(trafficDaily.date)
         .orderBy(asc(trafficDaily.date)),
       prevSince
-        ? db.select(trafficSums).from(trafficDaily).where(and(gte(trafficDaily.date, prevSince), lt(trafficDaily.date, since)))
+        ? db
+            .select(trafficSums)
+            .from(trafficDaily)
+            .where(and(gte(trafficDaily.date, prevSince), lt(trafficDaily.date, since), inScope(trafficDaily.repoId)))
         : Promise.resolve([ZERO]),
       // Latest snapshot per repo = current star/fork counts
       db
         .selectDistinctOn([repoSnapshots.repoId])
         .from(repoSnapshots)
+        .where(inScope(repoSnapshots.repoId))
         .orderBy(repoSnapshots.repoId, desc(repoSnapshots.date)),
       db
         .select({ repoId: starEvents.repoId, n: sql<number>`count(*)::int` })
         .from(starEvents)
-        .where(gte(starEvents.starredAt, new Date(since + "T00:00:00Z")))
+        .where(and(gte(starEvents.starredAt, new Date(since + "T00:00:00Z")), inScope(starEvents.repoId)))
         .groupBy(starEvents.repoId),
       db
         .select({ repoId: forkEvents.repoId, n: sql<number>`count(*)::int` })
         .from(forkEvents)
-        .where(gte(forkEvents.createdAt, new Date(since + "T00:00:00Z")))
+        .where(and(gte(forkEvents.createdAt, new Date(since + "T00:00:00Z")), inScope(forkEvents.repoId)))
         .groupBy(forkEvents.repoId),
-      db.select().from(syncRuns).orderBy(desc(syncRuns.startedAt)).limit(1),
-      db.select().from(repoLanguages),
-      db.select({ repoId: repoLoc.repoId, language: repoLoc.language, bytes: repoLoc.nonBlank }).from(repoLoc),
-      db.select().from(repoFrameworks),
+      db
+        .select()
+        .from(syncRuns)
+        .where(
+          scope.installationIds === null
+            ? undefined
+            : scope.installationIds.length
+              ? inArray(syncRuns.installationId, scope.installationIds)
+              : sql`false`,
+        )
+        .orderBy(desc(syncRuns.startedAt))
+        .limit(1),
+      db.select().from(repoLanguages).where(inScope(repoLanguages.repoId)),
+      db.select({ repoId: repoLoc.repoId, language: repoLoc.language, bytes: repoLoc.nonBlank }).from(repoLoc).where(inScope(repoLoc.repoId)),
+      db.select().from(repoFrameworks).where(inScope(repoFrameworks.repoId)),
     ]);
 
-  const activity = await loadActivity(since, until);
+  const activity = await loadActivity(since, until, inScope);
   const healthBy = new Map(activity.healthRows.map((h) => [h.repoId, h]));
   const runsBy = new Map<number, typeof activity.runRows>();
   for (const r of activity.runRows) {
@@ -341,7 +373,16 @@ export async function getOverview(rangeDays: number) {
       uniques: sql<number>`sum(${referrers.uniques})::int`,
     })
     .from(referrers)
-    .where(sql`${referrers.date} = (select max(date) from referrers)`)
+    .where(
+      and(
+        inScope(referrers.repoId),
+        scope.repoIds === null
+          ? sql`${referrers.date} = (select max(date) from referrers)`
+          : scope.repoIds.length
+            ? sql`${referrers.date} = (select max(date) from referrers where repo_id in (${sql.join(scope.repoIds.map((id) => sql`${id}`), sql`, `)}))`
+            : sql`false`,
+      ),
+    )
     .groupBy(referrers.referrer)
     .orderBy(desc(sql`sum(${referrers.count})`))
     .limit(10);
@@ -351,7 +392,7 @@ export async function getOverview(rangeDays: number) {
     ? await db
         .select({ date: referrers.date, referrer: referrers.referrer, count: sql<number>`sum(${referrers.count})::int` })
         .from(referrers)
-        .where(and(gte(referrers.date, since), inArray(referrers.referrer, topReferrers.map((r) => r.referrer))))
+        .where(and(gte(referrers.date, since), inArray(referrers.referrer, topReferrers.map((r) => r.referrer)), inScope(referrers.repoId)))
         .groupBy(referrers.date, referrers.referrer)
     : [];
   const trendBy = new Map<string, { date: string; count: number }[]>();
@@ -364,7 +405,7 @@ export async function getOverview(rangeDays: number) {
     trend: bucket(fillDaily(trendBy.get(r.referrer) ?? [], "count", since, until), 30),
   }));
 
-  const windows = await latestWindows();
+  const windows = await latestWindows(inScope(trafficWindows.repoId));
   const window14 = windows.reduce(
     (a, w) => ({
       views: a.views + w.views,
@@ -380,21 +421,23 @@ export async function getOverview(rangeDays: number) {
       .select({ alert: alerts, fullName: repos.fullName })
       .from(alerts)
       .innerJoin(repos, eq(repos.id, alerts.repoId))
-      .where(gte(alerts.date, since))
+      .where(and(gte(alerts.date, since), inScope(alerts.repoId)))
       .orderBy(desc(alerts.date), desc(alerts.id))
       .limit(8),
     db
       .select({ date: annotations.date, label: annotations.label, name: repos.name })
       .from(annotations)
       .innerJoin(repos, eq(repos.id, annotations.repoId))
-      .where(gte(annotations.date, since))
+      .where(and(gte(annotations.date, since), inScope(annotations.repoId)))
       .orderBy(asc(annotations.date)),
     // Releases of your own repos (pre-releases left out to keep the overview chart readable)
     db
       .select({ publishedAt: releases.publishedAt, tag: releases.tag, name: repos.name })
       .from(releases)
       .innerJoin(repos, eq(repos.id, releases.repoId))
-      .where(and(gte(releases.publishedAt, new Date(since + "T00:00:00Z")), eq(releases.prerelease, false), eq(repos.isFork, false)))
+      .where(
+        and(gte(releases.publishedAt, new Date(since + "T00:00:00Z")), eq(releases.prerelease, false), eq(repos.isFork, false), inScope(releases.repoId)),
+      )
       .orderBy(asc(releases.publishedAt)),
   ]);
 
@@ -459,12 +502,12 @@ export async function getOverview(rangeDays: number) {
   };
 }
 
-export async function getRepoDetail(owner: string, name: string, rangeDays: number) {
+export async function getRepoDetail(owner: string, name: string, rangeDays: number, scope: Scope = ALL_SCOPE) {
   const db = getDb();
   const [repo] = await db.select().from(repos).where(eq(repos.fullName, `${owner}/${name}`)).limit(1);
-  if (!repo) return null;
-  const { since, until, prevSince } = await windowFor(rangeDays, repo.id);
-  const activity = await loadActivity(since, until, repo.id);
+  if (!repo || !canSeeRepo(scope, repo.id)) return null;
+  const { since, until, prevSince } = await windowFor(rangeDays, eq(trafficDaily.repoId, repo.id));
+  const activity = await loadActivity(since, until, (col) => eq(col, repo.id));
   const codeHealth = await loadCodeHealth(since, until, [repo.id]);
 
   const latestFor = (table: typeof referrers | typeof popularPaths | typeof releaseAssets) =>
@@ -506,7 +549,7 @@ export async function getRepoDetail(owner: string, name: string, rangeDays: numb
       .orderBy(asc(releaseAssets.date)),
     db.select().from(starEvents).where(eq(starEvents.repoId, repo.id)).orderBy(desc(starEvents.starredAt)),
     db.select().from(forkEvents).where(eq(forkEvents.repoId, repo.id)).orderBy(desc(forkEvents.createdAt)),
-    latestWindows(repo.id),
+    latestWindows(eq(trafficWindows.repoId, repo.id)),
     db
       .select({ date: referrers.date, referrer: referrers.referrer, count: referrers.count })
       .from(referrers)
@@ -643,10 +686,10 @@ export function alertShortLabel(kind: string) {
 }
 
 /** Rows for CSV export. */
-export async function getExportData(kind: "repos" | "daily", rangeDays: number) {
+export async function getExportData(kind: "repos" | "daily", rangeDays: number, scope: Scope = ALL_SCOPE) {
   const db = getDb();
   if (kind === "repos") {
-    const o = await getOverview(rangeDays);
+    const o = await getOverview(rangeDays, scope);
     return o.repos.map(({ spark: _spark, ...r }) => ({
       repo: r.fullName,
       views: r.views,
@@ -666,7 +709,7 @@ export async function getExportData(kind: "repos" | "daily", rangeDays: number) 
       since: o.since,
     }));
   }
-  const { since } = await windowFor(rangeDays);
+  const { since } = await windowFor(rangeDays, repoFilter(scope, trafficDaily.repoId));
   return db
     .select({
       date: trafficDaily.date,
@@ -678,14 +721,20 @@ export async function getExportData(kind: "repos" | "daily", rangeDays: number) 
     })
     .from(trafficDaily)
     .innerJoin(repos, eq(repos.id, trafficDaily.repoId))
-    .where(gte(trafficDaily.date, since))
+    .where(and(gte(trafficDaily.date, since), repoFilter(scope, trafficDaily.repoId)))
     .orderBy(asc(trafficDaily.date), asc(repos.fullName));
 }
 
 /** Your own activity for /me: contribution totals, heatmap, streaks, repos, followers. Null before the first sync. */
-export async function getMe(today = isoDay()) {
+export async function getMe(today = isoDay(), scope: Scope = ALL_SCOPE) {
   const db = getDb();
-  const [latest] = await db.select().from(profileSnapshots).orderBy(desc(profileSnapshots.date)).limit(1);
+  if (scope.logins !== null && !scope.logins.length) return null;
+  const [latest] = await db
+    .select()
+    .from(profileSnapshots)
+    .where(scope.logins === null ? undefined : inArray(profileSnapshots.login, scope.logins))
+    .orderBy(desc(profileSnapshots.date))
+    .limit(1);
   if (!latest) return null;
   const login = latest.login;
 

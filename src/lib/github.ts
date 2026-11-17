@@ -1,27 +1,38 @@
 import { Readable } from "node:stream";
 import type { ReadableStream as WebReadableStream } from "node:stream/web";
 import { Octokit } from "@octokit/rest";
+import { currentGitHub } from "./github-context";
 
 let _octokit: Octokit | null = null;
 
+/** Octokit options shared by every client this app creates. */
+export const OCTOKIT_DEFAULTS = {
+  userAgent: "github-repo-stats",
+  // Octokit logs every failed request; the sync expects some (403 for a missing optional
+  // permission) and reports real failures itself, so keep the console readable.
+  log: { debug: () => {}, info: () => {}, warn: console.warn, error: () => {} },
+};
+
+/** The client for the current context (an App installation or user), else the personal token. */
 export function getOctokit() {
+  const ctx = currentGitHub();
+  if (ctx) return ctx.octokit;
   if (!_octokit) {
     const auth = process.env.GITHUB_TOKEN;
     if (!auth) throw new Error("GITHUB_TOKEN is not set");
-    _octokit = new Octokit({
-      auth,
-      userAgent: "github-repo-stats",
-      // Octokit logs every failed request; the sync expects some (403 for a missing optional
-      // permission) and reports real failures itself, so keep the console readable.
-      log: { debug: () => {}, info: () => {}, warn: console.warn, error: () => {} },
-    });
+    _octokit = new Octokit({ auth, ...OCTOKIT_DEFAULTS });
   }
   return _octokit;
 }
 
 /** All repositories owned by the token's user. */
+/** Repos to sync: those the App installation can see, or (personal token) the repos you own. */
 export async function listOwnedRepos() {
   const octokit = getOctokit();
+  if (currentGitHub()?.installationId) {
+    const repos = await octokit.paginate(octokit.rest.apps.listReposAccessibleToInstallation, { per_page: 100 });
+    return repos as unknown as Awaited<ReturnType<typeof octokit.rest.repos.listForAuthenticatedUser>>["data"];
+  }
   return octokit.paginate(octokit.rest.repos.listForAuthenticatedUser, {
     affiliation: "owner",
     per_page: 100,
@@ -114,7 +125,8 @@ export async function fetchBranchSha(owner: string, repo: string, branch: string
  * GitHub redirects to a short-lived codeload URL that carries its own token.
  */
 export async function fetchTarball(owner: string, repo: string, ref: string): Promise<Readable> {
-  const token = process.env.GITHUB_TOKEN;
+  const ctx = currentGitHub();
+  const token = ctx ? await ctx.token() : process.env.GITHUB_TOKEN;
   if (!token) throw new Error("GITHUB_TOKEN is not set");
   const res = await fetch(`https://api.github.com/repos/${owner}/${repo}/tarball/${encodeURIComponent(ref)}`, {
     headers: { authorization: `Bearer ${token}`, "user-agent": "github-repo-stats", accept: "application/vnd.github+json" },

@@ -650,6 +650,22 @@ describe("repo activity", () => {
   });
 });
 
+describe("App installations", () => {
+  it("tags repos and the sync run with the installation being synced", async () => {
+    m.listOwnedRepos.mockResolvedValue([repo(1, "alpha")] as never);
+    const r = await runSync({ installationId: 4242, contributions: null, skipAlerts: true });
+    expect(r.contributionYearsPending).toBeNull(); // contributions skipped (no user token)
+    expect(m.fetchViewer).not.toHaveBeenCalled();
+    const row = await pg.query("select installation_id::int from repos where id = 1");
+    expect(row.rows[0]).toEqual({ installation_id: 4242 });
+    const run = await pg.query("select installation_id::int from sync_runs order by id desc limit 1");
+    expect(run.rows[0]).toEqual({ installation_id: 4242 });
+    // A personal-token sync clears it again (switching back to single-user mode)
+    await runSync();
+    expect((await pg.query("select installation_id from repos where id = 1")).rows[0]).toEqual({ installation_id: null });
+  });
+});
+
 describe("code health", () => {
   it("stores test lines, TODOs, a daily code snapshot and the matched framework package", async () => {
     m.listOwnedRepos.mockResolvedValue([repo(7, "health", { pushed_at: new Date().toISOString() })] as never);

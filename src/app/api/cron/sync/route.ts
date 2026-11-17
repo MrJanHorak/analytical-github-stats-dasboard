@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { isAppMode } from "@/lib/app-mode";
 import { runSync } from "@/lib/sync";
 
 export const dynamic = "force-dynamic";
@@ -9,6 +10,9 @@ export async function GET(req: Request) {
   if (!secret || req.headers.get("authorization") !== `Bearer ${secret}`) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
+  // Sign-in (App) mode syncs every user from GitHub Actions (`npm run sync:all`), which has no
+  // function time limit; this route only serves the single-user setup.
+  if (isAppMode()) return NextResponse.json({ skipped: "App mode: the GitHub Actions workflow runs npm run sync:all" });
   // Leave headroom under maxDuration; unfinished star/fork backfills resume next run.
   const timeBudgetMs = Number(process.env.SYNC_TIME_BUDGET_MS ?? (maxDuration - 15) * 1000);
   const result = await runSync({ timeBudgetMs });
