@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { safeNext } from "@/lib/auth-urls";
+import { homeUrl, safeNext } from "@/lib/auth-urls";
 import { decrypt, encrypt } from "@/lib/crypto";
 import { createSessionToken, readSessionToken } from "@/lib/session";
 
@@ -35,5 +35,13 @@ describe("safeNext", () => {
     expect(safeNext("//evil.example")).toBe("/");
     expect(safeNext("/\\evil.example")).toBe("/");
     expect(safeNext(null)).toBe("/");
+  });
+});
+
+describe("homeUrl", () => {
+  it("prefers APP_URL, then Vercel's production domain", () => {
+    expect(homeUrl({ APP_URL: "https://x.dev/", VERCEL_PROJECT_PRODUCTION_URL: "y.vercel.app" })).toBe("https://x.dev");
+    expect(homeUrl({ VERCEL_PROJECT_PRODUCTION_URL: "y.vercel.app" })).toBe("https://y.vercel.app");
+    expect(homeUrl({})).toBeNull();
   });
 });

@@ -213,7 +213,7 @@ All variables are listed with comments in [`.env.example`](./.env.example).
 | `DATABASE_URL` | ✅ | Postgres connection string |
 | `CRON_SECRET` | ✅ | Protects `/api/cron/sync` |
 | `DASHBOARD_PASSWORD` | recommended | HTTP basic auth for the dashboard and notes (any username) |
-| `APP_URL` | | Public URL, for links in alert messages |
+| `APP_URL` | | Public URL, for links in alert messages and as the sign-in address (default on Vercel: the production domain, so sign-in from a preview URL goes there) |
 | `ALERT_WEBHOOK_URL` | | Slack/Discord webhook for alerts |
 | `ALERTS_ENABLED` | | `false` turns alert detection off (default `true`) |
 | `ALERT_SPIKE_FACTOR` | | Spike threshold vs trailing average (default `3`) |

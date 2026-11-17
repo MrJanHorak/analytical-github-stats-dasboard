@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { NextResponse } from "next/server";
 import { appConfig, isAppMode } from "@/lib/app-mode";
-import { callbackUrl, safeNext } from "@/lib/auth-urls";
+import { callbackUrl, homeUrl, safeNext } from "@/lib/auth-urls";
 import { STATE_COOKIE } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
@@ -12,7 +12,7 @@ export async function GET(req: Request) {
   const next = safeNext(new URL(req.url).searchParams.get("next"));
   // Preview/alias domains aren't registered callback URLs, and the state cookie must live on
   // the domain GitHub returns to. So start the sign-in on the main site.
-  const home = process.env.APP_URL?.replace(/\/$/, "");
+  const home = homeUrl();
   if (home && new URL(home).origin !== new URL(req.url).origin) {
     return NextResponse.redirect(`${home}/api/auth/signin?next=${encodeURIComponent(next)}`);
   }
