@@ -3,6 +3,7 @@ import { Octokit } from "@octokit/rest";
 import { appConfig } from "./app-mode";
 import type { GitHubContext } from "./github-context";
 import { OCTOKIT_DEFAULTS } from "./github";
+import { normalizePrivateKey } from "./private-key";
 
 /**
  * GitHub App plumbing (App mode only). No Next.js imports, so the CLI sync can use it.
@@ -13,14 +14,21 @@ import { OCTOKIT_DEFAULTS } from "./github";
  *   token can see, like their contribution calendar and which installations they can access.
  */
 
-export function appOctokit() {
+let keyCache: { raw: string; pem: string } | null = null;
+function appCredentials() {
   const { appId, privateKey } = appConfig();
+  if (keyCache?.raw !== privateKey) keyCache = { raw: privateKey, pem: normalizePrivateKey(privateKey) };
+  return { appId, privateKey: keyCache.pem };
+}
+
+export function appOctokit() {
+  const { appId, privateKey } = appCredentials();
   return new Octokit({ authStrategy: createAppAuth, auth: { appId, privateKey }, ...OCTOKIT_DEFAULTS });
 }
 
 /** A sync context for one installation; tokens are minted and renewed automatically. */
 export function installationContext(installationId: number): GitHubContext {
-  const { appId, privateKey } = appConfig();
+  const { appId, privateKey } = appCredentials();
   const octokit = new Octokit({ authStrategy: createAppAuth, auth: { appId, privateKey, installationId }, ...OCTOKIT_DEFAULTS });
   return {
     octokit,
