@@ -39,7 +39,15 @@ export async function POST() {
     if (left < 30_000) break;
     // Claim it first so a double click doesn't start two syncs
     await getDb().update(installations).set({ lastSyncedAt: new Date() }).where(eq(installations.id, inst.id));
-    const r = await syncInstallation(inst.id, { timeBudgetMs: left - 20_000 });
+    let r;
+    try {
+      r = await syncInstallation(inst.id, { timeBudgetMs: left - 20_000 });
+    } catch (e) {
+      // A failed sync (e.g. bad App credentials) shouldn't lock the button for 15 minutes
+      await getDb().update(installations).set({ lastSyncedAt: inst.lastSyncedAt }).where(eq(installations.id, inst.id));
+      console.error("sync/me failed", e);
+      return NextResponse.json({ error: e instanceof Error ? e.message : String(e) }, { status: 500 });
+    }
     results.push({ account: inst.accountLogin, reposSynced: r.reposSynced, errors: r.errors.length });
   }
   return NextResponse.json({ synced: results.length, results });
