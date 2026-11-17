@@ -10,6 +10,12 @@ export const dynamic = "force-dynamic";
 export async function GET(req: Request) {
   if (!isAppMode()) return NextResponse.redirect(new URL("/", req.url));
   const next = safeNext(new URL(req.url).searchParams.get("next"));
+  // Preview/alias domains aren't registered callback URLs, and the state cookie must live on
+  // the domain GitHub returns to. So start the sign-in on the main site.
+  const home = process.env.APP_URL?.replace(/\/$/, "");
+  if (home && new URL(home).origin !== new URL(req.url).origin) {
+    return NextResponse.redirect(`${home}/api/auth/signin?next=${encodeURIComponent(next)}`);
+  }
   const state = randomBytes(16).toString("base64url");
   const url = new URL("https://github.com/login/oauth/authorize");
   url.searchParams.set("client_id", appConfig().clientId);
